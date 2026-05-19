@@ -1,0 +1,33 @@
+planning_plugin: ompl_interface/OMPLPlanner
+request_adapters:
+  - default_planning_request_adapters/AddTimeOptimalParameterization
+  - default_planning_request_adapters/ResolveConstraintFrames
+  - default_planning_request_adapters/FixWorkspaceBounds
+  - default_planning_request_adapters/FixStartStateBounds
+  - default_planning_request_adapters/FixStartStateInCollision
+  - default_planning_request_adapters/FixStartStatePathConstraints
+start_state_max_bounds_error: 0.1
+jiggle_fraction: 0.05
+planner_configs:
+  RRTConnectkConfigDefault:
+    type: geometric::RRTConnect
+    range: 0.0
+  RRTkConfigDefault:
+    type: geometric::RRT
+    range: 0.0
+  RRTstarkConfigDefault:
+    type: geometric::RRTstar
+    range: 0.0
+    goal_bias: 0.05
+    rewire_factor: 1.1
+    use_k_nearest: true
+    delay_collision_checking: false
+  PRMkConfigDefault:
+    type: geometric::PRM
+jaka_s12:
+  planner_configs:
+    - RRTConnectkConfigDefault
+    - RRTkConfigDefault
+    - RRTstarkConfigDefault
+    - PRMkConfigDefault
+  default_planner_config: RRTConnectkConfigDefault

@@ -1,0 +1,23 @@
+jaka_s12:
+  kinematics_solver: pick_ik/PickIkPlugin
+  kinematics_solver_search_resolution: 0.005
+  kinematics_solver_timeout: 0.15
+  kinematics_solver_attempts: 8
+  mode: global
+  stop_optimization_on_valid_solution: true
+  position_threshold: 0.001
+  orientation_threshold: 0.01
+  approximate_solution_position_threshold: 0.001
+  approximate_solution_orientation_threshold: 0.3
+  rotation_scale: 0.7
+  cost_functions:
+    - pick_ik/MinimalJointDisplacementCostFunction
+    - pick_ik/JointLimitAvoidanceCostFunction
+
+
+gripper:
+  kinematics_solver: pick_ik/PickIkPlugin
+  kinematics_solver_search_resolution: 0.005
+  kinematics_solver_timeout: 0.05
+  kinematics_solver_attempts: 3
+  mode: local

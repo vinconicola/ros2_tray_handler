@@ -1,0 +1,11 @@
+ros2 launch jaka_s12_moveit_config gazebo.launch.py
+ros2 launch jaka_s12_moveit_config demo.launch.py use_rviz_sim:=true
+colcon build --symlink-install 
+ros2 run ros_gz_bridge parameter_bridge /camera/image@sensor_msgs/msg/Image@ignition.msgs.Image /camera/depth_image@sensor_msgs/msg/Image@ignition.msgs.Image /camera/camera_info@sensor_msgs/msg/CameraInfo@ignition.msgs.CameraInfo /camera/points@sensor_msgs/msg/PointCloud2@ignition.msgs.PointCloudPacked /clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock
+
+ros2 launch camera_d435_rotator d435_rotated.launch.py
+ros2 launch jaka_planner moveit_server.launch.py ip:=192.168.0.75 model:=s12
+ros2 launch jaka_s12_moveit_config demo.launch.py
+ros2 launch jaka_s12_moveit_config move_group.launch.py
+ros2 run yolo_inference yolo_inference_node.py
+ros2 service call /yolo_inference/trigger_detection std_srvs/srv/Trigger "{}"

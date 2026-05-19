@@ -1,0 +1,14 @@
+.vscode
+build
+data
+install
+kernels
+log
+logs
+runs
+src/.vscode
+src/.devcontainer
+src/__pycache__
+src/training/real_world
+src/training/images
+src/training/RW_COCO_dataset
