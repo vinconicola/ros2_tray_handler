@@ -1,22 +1,7 @@
-from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 from moveit_configs_utils import MoveItConfigsBuilder
+from moveit_configs_utils.launches import generate_demo_launch
 
 
 def generate_launch_description():
-    moveit_config = (
-        MoveItConfigsBuilder("jaka_s12", package_name="jaka_s12_moveit_config")
-        .robot_description(mappings={"use_gazebo": "true"})
-        .to_moveit_configs()
-    )
-
-    return LaunchDescription(
-        [
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    str(moveit_config.package_path / "launch" / "gazebo.launch.py")
-                )
-            )
-        ]
-    )
+    moveit_config = MoveItConfigsBuilder("jaka_s12", package_name="jaka_s12_moveit_config").to_moveit_configs()
+    return generate_demo_launch(moveit_config)
