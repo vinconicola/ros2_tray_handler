@@ -28,7 +28,7 @@ CLASS_COLORS = {
     1: (180, 100, 255),  # rack  → purple
 }
 
-MODEL_PATH = '/home/nicola/ros2_ws/src/yolo_inference/weights/best.pt'
+MODEL_PATH = '/home/nicola/ros2_ws/src/yolo_inference/weights/best_sim.pt'
 
 # Filtering parameters
 MIN_CLUSTER_POINTS = 100    # ignore tiny detections
@@ -63,7 +63,7 @@ class YoloInferenceNode(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.world_frame = 'world'
         
-        self.get_logger().info('YOLO Node ready in SNAPSHOT mode. Call ~/trigger_detection to scan.')
+        self.get_logger().info('YOLO Node ready in SNAPSHOT mode. Call "ros2 service call /yolo_inference/trigger_detection std_srvs/srv/Trigger "{}"" to scan.')
 
     def handle_trigger(self, request, response):
         """Service callback to enable detection for the next available frame."""
@@ -152,219 +152,103 @@ class YoloInferenceNode(Node):
         inliers = np.all(np.abs(points - mean) < std_threshold * std, axis=1)
         return points[inliers]
 
-    def get_surface_with_normal(self, points, label='object'):
-        """Get front vertical face center with horizontal normal for each stacked tray layer."""
-        if len(points) < 50:
-            return []
-
-        # ── Closest dense cluster in XY distance (world coords) ──────────────────
-        xy_dist = np.sqrt(points[:, 0]**2 + points[:, 1]**2)
-
-        hist, bin_edges = np.histogram(xy_dist, bins=20)
-        threshold = hist.max() * 0.05
-        first_bin = next((i for i, h in enumerate(hist) if h > threshold), None)
-        if first_bin is None:
-            return []
-
-        cluster_end = first_bin
-        for i in range(first_bin, len(hist)):
-            if hist[i] > threshold:
-                cluster_end = i
-            else:
-                if all(h <= threshold for h in hist[i:i+3]):
-                    break
-
-        dist_min = bin_edges[first_bin]
-        dist_max = bin_edges[cluster_end + 1]
-        cluster  = points[(xy_dist >= dist_min) & (xy_dist <= dist_max)]
-
-        if len(cluster) < 30:
-            return []
-
-        # ── Split into individual trays by Z (stacked, min 10cm apart) ───────────
-        z_vals      = cluster[:, 2]
-        z_hist, z_edges = np.histogram(z_vals, bins=40)
-        z_bin_width = z_edges[1] - z_edges[0]
-
-        min_separation_bins = max(1, int(0.10 / z_bin_width))
-        peak_bins = []
-        for i, h in enumerate(z_hist):
-            if h < z_hist.max() * 0.1:
-                continue
-            if not peak_bins or (i - peak_bins[-1]) >= min_separation_bins:
-                peak_bins.append(i)
-            elif z_hist[i] > z_hist[peak_bins[-1]]:
-                peak_bins[-1] = i
-
-        if not peak_bins:
-            return []
-
-        results = []
-        for pb in peak_bins:
-            z_peak = (z_edges[pb] + z_edges[pb + 1]) / 2.0
-            layer  = cluster[np.abs(cluster[:, 2] - z_peak) < 2 * z_bin_width]
-
-            if len(layer) < 20:
-                continue
-
-            layer_xy_dist   = np.sqrt(layer[:, 0]**2 + layer[:, 1]**2)
-            front_threshold = np.percentile(layer_xy_dist, 20)
-            front_points    = layer[layer_xy_dist <= front_threshold]
-
-            if len(front_points) < 10:
-                continue
-
-            centroid     = layer.mean(axis=0).copy()
-            centroid[:2] = front_points[:, :2].mean(axis=0)
-
-            centered = front_points - front_points.mean(axis=0)
-            cov      = np.cov(centered.T)
-            _, eigenvectors = np.linalg.eigh(cov)
-            normal   = eigenvectors[:, 0].copy()
-            normal[2] = 0.0
-            norm_len  = np.linalg.norm(normal)
-            if norm_len < 1e-6:
-                continue
-            normal = normal / norm_len
-
-            if np.dot(normal, centroid) > 0:
-                normal = -normal
-
-            results.append((centroid, normal))
-
-        return results
-
     def get_rack_opening(self, points, label='rack'):
-        """Find rack center and normal. Works for any rack orientation around the robot."""
+        """
+        Find rack front-face center and inward normal from a U-shaped rack point cloud.
+        The rack opening faces the robot. Returns (centroid_3d, normal_3d) or (None, None).
+        """
         if len(points) < 50:
             return None, None
 
-        # ── Step 1: Remove floor points ──────────────────────────────────────────
-        z_min = points[:, 2].min()
-        z_max = points[:, 2].max()
-        cluster = points[points[:, 2] >= z_min + (z_max - z_min) * 0.30]
-        if len(cluster) < 30:
+        # ── Step 1: Remove bottom 20% in Z (base of U fills the arm gap) ─────────
+        z_threshold = np.percentile(points[:, 2], 20)
+        points = points[points[:, 2] >= z_threshold]
+        if len(points) < 30:
             return None, None
 
-        # ── Step 2: Keep only the nearest 40% in XY distance from robot ──────────
-        #This isolates the front face and arm tips regardless of rack orientation
-        xy_dist = np.linalg.norm(cluster[:, :2], axis=1)
+        # ── Step 2: Keep only the nearest 40% in XY distance ─────────────────────
+        xy_dist = np.linalg.norm(points[:, :2], axis=1)
         xy_min  = xy_dist.min()
         xy_max  = xy_dist.max()
-        cluster = cluster[xy_dist <= xy_min + (xy_max - xy_min) * 0.4]
+        cluster = points[xy_dist <= xy_min + (xy_max - xy_min) * 0.4]
         if len(cluster) < 20:
             return None, None
 
-        # ── Step 3: PCA in XY to find the rack face direction ────────────────────
-        pts_2d   = cluster[:, :2]
-        centered = pts_2d - pts_2d.mean(axis=0)
-        cov      = np.cov(centered.T)
-        vals, vecs = np.linalg.eigh(cov)
+        # ── Step 3: PCA in XY to find rack face orientation ───────────────────────
+        pts_2d      = cluster[:, :2]
+        centroid_2d = pts_2d.mean(axis=0)
+        centered    = pts_2d - centroid_2d
+        cov         = np.cov(centered.T)
+        vals, vecs  = np.linalg.eigh(cov)
 
-        vec_large = vecs[:, np.argmax(vals)].copy()  # largest variance
-        vec_small = vecs[:, np.argmin(vals)].copy()  # smallest variance
+        depth_vec = vecs[:, np.argmin(vals)].copy()
+        face_vec  = vecs[:, np.argmax(vals)].copy()
 
-        # depth_vec should point FROM rack TOWARD robot — check both candidates
-        # The vector pointing toward robot has a negative dot with rack_mean_xy
-        rack_mean_xy = pts_2d.mean(axis=0)
-        rack_dir     = -rack_mean_xy / (np.linalg.norm(rack_mean_xy) + 1e-6)  # unit vector toward robot
-
-        # Check which eigenvector is closer to pointing toward the robot (<40°)
-        cos_thresh = np.cos(np.radians(40))
-
-        dot_large = abs(np.dot(vec_large, rack_dir))
-        dot_small = abs(np.dot(vec_small, rack_dir))
-
-        if dot_small >= cos_thresh or dot_small > dot_large:
-            # Smallest variance vector points toward robot — normal use case
-            depth_vec = vec_small
-            face_vec  = vec_large
-        else:
-            # Largest variance vector is closer to robot direction — side view case
-            self.get_logger().warn('PCA: swapping face/depth vectors — rack may be viewed from side')
-            depth_vec = vec_large
-            face_vec  = vec_small
-
-        # Ensure depth_vec points toward robot
+        # depth_vec must point FROM rack TOWARD robot
+        rack_dir = -centroid_2d / (np.linalg.norm(centroid_2d) + 1e-6)
         if np.dot(depth_vec, rack_dir) < 0:
             depth_vec = -depth_vec
 
-        # face_vec handedness: ensure face_vec x depth_vec points up (world Z+)
-        cross_z = face_vec[0] * depth_vec[1] - face_vec[1] * depth_vec[0]
-        if cross_z < 0:
-            face_vec = -face_vec
+        # Detect side-view degenerate case
+        if np.dot(depth_vec, rack_dir) < 0.5:
+            self.get_logger().warn(
+                f'PCA: depth_vec misaligned (dot={np.dot(depth_vec, rack_dir):.2f})'
+                ' — swapping face/depth vectors'
+            )
+            depth_vec, face_vec = face_vec, depth_vec
+            if np.dot(depth_vec, rack_dir) < 0:
+                depth_vec = -depth_vec
 
-        # ── Step 4: Project all points onto (face_vec, depth_vec) local axes ─────
-        face_proj  = cluster[:, :2] @ face_vec   # position along rack width
-        depth_proj = cluster[:, :2] @ depth_vec  # distance toward robot
+        # ── Step 4: Split into left/right arms using face_vec projection ──────────
+        face_proj = cluster[:, :2] @ face_vec
 
-        # ── Step 5: Isolate front face — keep only the nearest 20% in depth ──────
-        depth_threshold = np.percentile(depth_proj, 80)  # high depth_proj = closer to robot
-        front_mask   = depth_proj >= depth_threshold
-        front_points = cluster[front_mask]
-        front_face   = face_proj[front_mask]
+        hist, bin_edges = np.histogram(face_proj, bins=30)
+        bin_centers     = (bin_edges[:-1] + bin_edges[1:]) / 2
 
-        if len(front_points) < 10:
+        # Look for the gap only in the middle 60% to avoid edge effects
+        mid_mask    = (bin_centers > np.percentile(face_proj, 20)) & \
+                    (bin_centers < np.percentile(face_proj, 80))
+        gap_center  = bin_centers[mid_mask][np.argmin(hist[mid_mask])]
+
+        left_cluster  = cluster[face_proj <  gap_center]
+        right_cluster = cluster[face_proj >= gap_center]
+
+        if len(left_cluster) < 10 or len(right_cluster) < 10:
             return None, None
 
-        # ── Step 6: Split arms by face projection (left/right along rack width) ───
-        face_mid  = (front_face.min() + front_face.max()) / 2.0
-        left_mask  = front_face <  face_mid
-        right_mask = front_face >= face_mid
+        # ── Step 5: For each arm, find the tip (front 20% in depth) ───────────────
+        def arm_tip_center(arm):
+            d_proj     = arm[:, :2] @ depth_vec
+            threshold  = np.percentile(d_proj, 80)
+            tip_points = arm[d_proj >= threshold]
+            return tip_points[:, :2].mean(axis=0) if len(tip_points) >= 2 else None
 
-        left_arm  = front_points[left_mask]
-        right_arm = front_points[right_mask]
+        left_tip  = arm_tip_center(left_cluster)
+        right_tip = arm_tip_center(right_cluster)
 
-        if len(left_arm) < 5 or len(right_arm) < 5:
+        if left_tip is None or right_tip is None:
             return None, None
 
-        # ── Step 7: Find the true tip of each arm ────────────────────────────────
-        # Tip = closest to robot = highest depth_proj value
-        left_depth  = depth_proj[front_mask][left_mask]
-        right_depth = depth_proj[front_mask][right_mask]
+        # ── Step 6: Opening center = midpoint of the two tips ─────────────────────
+        center_xy = (left_tip + right_tip) / 2.0
+        z_center  = cluster[:, 2].mean()
+        centroid  = np.array([center_xy[0], center_xy[1], z_center])
 
-        left_tip_thresh  = np.percentile(left_depth,  80)
-        right_tip_thresh = np.percentile(right_depth, 80)
+        # ── Step 7: Normal points toward robot ────────────────────────────────────
+        arm_vec = right_tip - left_tip                          # vector along rack width
+        arm_vec = arm_vec / (np.linalg.norm(arm_vec) + 1e-6)   # normalize
 
-        left_tip_pts  = left_arm[left_depth   >= left_tip_thresh]
-        right_tip_pts = right_arm[right_depth >= right_tip_thresh]
+        # Normal = 90° rotation of arm_vec in XY
+        normal_candidates = np.array([ arm_vec[1], -arm_vec[0]])  # rotate +90°
 
-        if len(left_tip_pts) < 2 or len(right_tip_pts) < 2:
-            return None, None
+        # Pick the direction pointing toward robot
+        if np.dot(normal_candidates, rack_dir) < 0:
+            normal_candidates = -normal_candidates
 
-        left_tip  = left_tip_pts.mean(axis=0)
-        right_tip = right_tip_pts.mean(axis=0)
-
-        # ── Step 8: Centroid in rack local frame ──────────────────────────────────
-        left_tip  = left_tip_pts.mean(axis=0)
-        right_tip = right_tip_pts.mean(axis=0)
-
-        # Project both tips onto face_vec to get their position along rack width
-        left_face_proj  = np.dot(left_tip[:2],  face_vec)
-        right_face_proj = np.dot(right_tip[:2], face_vec)
-
-        # Project both tips onto depth_vec to get their distance toward robot
-        left_depth_proj  = np.dot(left_tip[:2],  depth_vec)
-        right_depth_proj = np.dot(right_tip[:2], depth_vec)
-
-        # Center along face = midpoint of the two arms along rack width
-        center_face_proj  = (left_face_proj + right_face_proj) / 2.0
-
-        # Center in depth = closest tip (the front face of the rack)
-        center_depth_proj = max(left_depth_proj, right_depth_proj)
-
-        # Reconstruct world XY from local rack frame
-        center_xy = center_face_proj * face_vec + center_depth_proj * depth_vec
-
-        x_center = center_xy[0]
-        y_center = center_xy[1]
-        z_center = cluster[:, 2].mean()
-        centroid = np.array([x_center, y_center, z_center])
-
-        # ── Step 9: Normal = depth_vec (already points toward robot) ─────────────
-        normal = np.array([depth_vec[0], depth_vec[1], 0.0])
+        normal = np.array([normal_candidates[0], normal_candidates[1], 0.0])
 
         return centroid, normal
+
 
     def is_duplicate(self, new_pos, existing_positions, threshold=0.25):
         """Check if the new position is within 'threshold' meters of any existing detection."""
@@ -492,13 +376,16 @@ class YoloInferenceNode(Node):
         if depth_msg.encoding == '16UC1':
             depth *= 0.001
 
-        fx = camera_info_msg.k[0]
-        fy = camera_info_msg.k[4]
-        cx = camera_info_msg.k[2]
-        cy = camera_info_msg.k[5]
-        if fx == 0.0 or fy == 0.0:
-            self.get_logger().warn('Camera intrinsics are invalid (fx/fy == 0). Skipping snapshot.')
-            return None, None
+        # D435 640x480 — computed from actual FOV 69.4° x 42.5°
+        # fx = (640/2) / tan(69.4°/2) = 462.1
+        # fy = (480/2) / tan(42.5°/2) = 617.1
+        # sim FOV
+        fx = 462.1
+        fy = 462.1
+
+        cx = 320.0
+        cy = 240.0
+
 
         u_coords, v_coords = np.meshgrid(
             np.arange(img_w, dtype=np.float32),
@@ -511,11 +398,11 @@ class YoloInferenceNode(Node):
         # Depth images are projected in ROS optical-frame coordinates:
         # x right, y down, z forward. The rest of this stack expects camera_link:
         # x forward, y left, z up.
-        x_link = z
-        y_link = -x_optical
-        z_link = -y_optical
+        # x_link = z
+        # y_link = -x_optical
+        # z_link = -y_optical
 
-        xyz = np.stack((x_link, y_link, z_link), axis=-1).astype(np.float32)
+        xyz = np.stack((x_optical, y_optical, z), axis=-1).astype(np.float32)
         valid_mask = np.isfinite(z) & (z > MIN_DEPTH) & (z < MAX_DEPTH)
         xyz[~valid_mask] = np.nan
         return xyz, valid_mask
@@ -536,10 +423,25 @@ class YoloInferenceNode(Node):
         arr, visible_mask = self.build_points_from_depth(depth_msg, camera_info_msg, rgb.shape)
         if arr is None:
             return
+        # #debug
+        # arr_flat_debug = arr.reshape(-1, 3)
+        # valid_pts = arr_flat_debug[np.isfinite(arr_flat_debug).all(axis=1)]
+        # self.get_logger().info(
+        #     f'RAW optical points\n'
+        #     f'  x (right):   min={valid_pts[:,0].min():.3f}  max={valid_pts[:,0].max():.3f}  mean={valid_pts[:,0].mean():.3f}\n'
+        #     f'  y (down):    min={valid_pts[:,1].min():.3f}  max={valid_pts[:,1].max():.3f}  mean={valid_pts[:,1].mean():.3f}\n'
+        #     f'  z (forward): min={valid_pts[:,2].min():.3f}  max={valid_pts[:,2].max():.3f}  mean={valid_pts[:,2].mean():.3f}'
+        # )
+        # self.get_logger().info(
+        #     f'Intrinsics — fx={camera_info_msg.k[0]:.2f}  fy={camera_info_msg.k[4]:.2f}  '
+        #     f'cx={camera_info_msg.k[2]:.2f}  cy={camera_info_msg.k[5]:.2f}  '
+        #     f'encoding={depth_msg.encoding}'
+        # )
+        # #
 
         arr_world = self.transform_points_to_world(
             arr.reshape(-1, 3),
-            depth_msg.header.frame_id,
+            'camera_optical_frame',
             depth_msg.header.stamp
         )
         if arr_world is None:
@@ -547,7 +449,15 @@ class YoloInferenceNode(Node):
         arr_world_img = arr_world.reshape((img_h, img_w, 3))
         arr_world_flat = arr_world_img.reshape(-1, 3)
         visible_mask &= np.isfinite(arr_world_img).all(axis=2)
-
+        # # debug
+        # valid_w = arr_world_flat[np.isfinite(arr_world_flat).all(axis=1)]
+        # self.get_logger().info(
+        #     f'WORLD points\n'
+        #     f'  x: min={valid_w[:,0].min():.3f}  max={valid_w[:,0].max():.3f}  mean={valid_w[:,0].mean():.3f}\n'
+        #     f'  y: min={valid_w[:,1].min():.3f}  max={valid_w[:,1].max():.3f}  mean={valid_w[:,1].mean():.3f}\n'
+        #     f'  z: min={valid_w[:,2].min():.3f}  max={valid_w[:,2].max():.3f}  mean={valid_w[:,2].mean():.3f}'
+        # )
+        # #
 
         # Run YOLOv8
         results = self.model(rgb, verbose=False)[0]
@@ -675,17 +585,18 @@ class YoloInferenceNode(Node):
         n_rack = (point_labels == 2).sum()
         self.get_logger().info(f'Points — tray: {n_tray}, rack: {n_rack} | TFs — trays: {tray_count}, racks: {rack_count}')
 
-        labeled_cloud = self.build_labeled_cloud(depth_msg, arr_world_flat, point_labels)
+        arr_flat = arr.reshape(-1, 3)
+        labeled_cloud = self.build_labeled_cloud(depth_msg, arr_flat, point_labels, 'camera_optical_frame')
         self.labeled_pub.publish(labeled_cloud)
 
         vis_msg = self.bridge.cv2_to_imgmsg(vis_img, 'bgr8')
         vis_msg.header = rgb_msg.header
         self.vis_pub.publish(vis_msg)
 
-    def build_labeled_cloud(self, original_msg, points_xyz, labels):
+    def build_labeled_cloud(self, original_msg, points_xyz, labels, frame_id=None):
         header = Header()
         header.stamp    = original_msg.header.stamp
-        header.frame_id = self.world_frame
+        header.frame_id = frame_id if frame_id else self.world_frame
 
         points_with_labels = []
         for pt, lbl in zip(points_xyz, labels):
@@ -703,6 +614,7 @@ class YoloInferenceNode(Node):
             points_with_labels
         )
         self.get_logger().info('Snapshot processing complete.')
+        #self.get_logger().info(f'Publishing cloud with {len(points_with_labels)} points, frame: {header.frame_id}')
         return cloud
 
 
