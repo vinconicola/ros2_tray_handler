@@ -151,6 +151,88 @@ class YoloInferenceNode(Node):
         std  = points.std(axis=0)
         inliers = np.all(np.abs(points - mean) < std_threshold * std, axis=1)
         return points[inliers]
+    
+    def get_surface_with_normal(self, points, label='object'):
+        """Get front vertical face center with horizontal normal for each stacked tray layer."""
+        if len(points) < 50:
+            return []
+
+        # ── Closest dense cluster in XY distance (world coords) ──────────────────
+        xy_dist = np.sqrt(points[:, 0]**2 + points[:, 1]**2)
+
+        hist, bin_edges = np.histogram(xy_dist, bins=20)
+        threshold = hist.max() * 0.05
+        first_bin = next((i for i, h in enumerate(hist) if h > threshold), None)
+        if first_bin is None:
+            return []
+
+        cluster_end = first_bin
+        for i in range(first_bin, len(hist)):
+            if hist[i] > threshold:
+                cluster_end = i
+            else:
+                if all(h <= threshold for h in hist[i:i+3]):
+                    break
+
+        dist_min = bin_edges[first_bin]
+        dist_max = bin_edges[cluster_end + 1]
+        cluster  = points[(xy_dist >= dist_min) & (xy_dist <= dist_max)]
+
+        if len(cluster) < 30:
+            return []
+
+        # ── Split into individual trays by Z (stacked, min 10cm apart) ───────────
+        z_vals      = cluster[:, 2]
+        z_hist, z_edges = np.histogram(z_vals, bins=40)
+        z_bin_width = z_edges[1] - z_edges[0]
+
+        min_separation_bins = max(1, int(0.10 / z_bin_width))
+        peak_bins = []
+        for i, h in enumerate(z_hist):
+            if h < z_hist.max() * 0.1:
+                continue
+            if not peak_bins or (i - peak_bins[-1]) >= min_separation_bins:
+                peak_bins.append(i)
+            elif z_hist[i] > z_hist[peak_bins[-1]]:
+                peak_bins[-1] = i
+
+        if not peak_bins:
+            return []
+
+        results = []
+        for pb in peak_bins:
+            z_peak = (z_edges[pb] + z_edges[pb + 1]) / 2.0
+            layer  = cluster[np.abs(cluster[:, 2] - z_peak) < 2 * z_bin_width]
+
+            if len(layer) < 20:
+                continue
+
+            layer_xy_dist   = np.sqrt(layer[:, 0]**2 + layer[:, 1]**2)
+            front_threshold = np.percentile(layer_xy_dist, 20)
+            front_points    = layer[layer_xy_dist <= front_threshold]
+
+            if len(front_points) < 10:
+                continue
+
+            centroid     = layer.mean(axis=0).copy()
+            centroid[:2] = front_points[:, :2].mean(axis=0)
+
+            centered = front_points - front_points.mean(axis=0)
+            cov      = np.cov(centered.T)
+            _, eigenvectors = np.linalg.eigh(cov)
+            normal   = eigenvectors[:, 0].copy()
+            normal[2] = 0.0
+            norm_len  = np.linalg.norm(normal)
+            if norm_len < 1e-6:
+                continue
+            normal = normal / norm_len
+
+            if np.dot(normal, centroid) > 0:
+                normal = -normal
+
+            results.append((centroid, normal))
+
+        return results
 
     def get_rack_opening(self, points, label='rack'):
         """
