@@ -50,8 +50,9 @@ public:
 
         trigger_client_ = this->create_client<std_srvs::srv::Trigger>("/yolo_inference/trigger_detection");
 
+        auto joint_states_topic = this->declare_parameter<std::string>("joint_states_topic", "/joint_states");
         joint_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
-            "/joint_states", 10, 
+            joint_states_topic, 10, 
             [this](const sensor_msgs::msg::JointState::SharedPtr msg) {
                 last_joint_state_ = *msg;
             });
@@ -307,43 +308,37 @@ public:
     }
 
     bool lift_until_touch(double max_lift = 0.05, double effort_threshold = 2.0) {
-        // 1. Ensure we have joint data
-        if (last_joint_state_.effort.empty()) {
-            RCLCPP_ERROR(this->get_logger(), "No joint state data received yet!");
+        if (last_joint_state_.effort.size() <= 1) {
+            RCLCPP_ERROR(this->get_logger(), "No joint effort data received yet!");
             return false;
         }
 
-        // 2. Record baseline (Joint 2 is typically index 1)
-        double baseline_effort = std::abs(last_joint_state_.effort[1]); 
-        
-        // 3. Set a very slow upward target
+        double baseline_effort = std::abs(last_joint_state_.effort[1]);
+
         arm_->setMaxVelocityScalingFactor(0.05);
         geometry_msgs::msg::Pose target_pose = arm_->getCurrentPose().pose;
         target_pose.position.z += max_lift;
         arm_->setPoseTarget(target_pose);
+        arm_->asyncMove();
 
-        // 4. Start movement asynchronously
-        // Note: In Humble/Rolling, asyncExecute returns a MoveItErrorCode immediately.
-        // We use move() in a separate thread or simply poll while the robot is moving.
-        arm_->asyncMove(); 
-
-        // 5. Poll effort until contact or motion ends
-        rclcpp::Rate loop_rate(50); // 50Hz polling
+        rclcpp::Rate loop_rate(50);
         auto start_time = this->now();
-        
         while (rclcpp::ok()) {
-            double current_effort = std::abs(last_joint_state_.effort[1]);
-            
-            // CONTACT DETECTED
-            if (current_effort > (baseline_effort + effort_threshold)) {
-                arm_->stop(); 
-                RCLCPP_INFO(this->get_logger(), "TOUCH! Effort Spike: %.2f", current_effort);
-                return true; 
+            if (last_joint_state_.effort.size() > 1) {
+                double current_effort = std::abs(last_joint_state_.effort[1]);
+                if (std::abs(current_effort - baseline_effort) > effort_threshold) {
+                    arm_->stop();
+                    RCLCPP_INFO(this->get_logger(), "TOUCH! Effort delta: %.2f", current_effort - baseline_effort);
+                    gripper_->setJointValueTarget(gripper_closed_);
+                    gripper_->move();
+                    return true;
+                }
             }
 
-            // Safety timeout (e.g., if move takes longer than 5 seconds)
             if ((this->now() - start_time).seconds() > 5.0) {
                 arm_->stop();
+                gripper_->setJointValueTarget(gripper_closed_);
+                gripper_->move();
                 break;
             }
 
@@ -354,29 +349,29 @@ public:
     }
     
     bool drop_until_touch(double max_descend = 0.05, double effort_drop_threshold = 1.5) {
-        if (last_joint_state_.effort.empty()) return false;
+        if (last_joint_state_.effort.size() <= 1) {
+            RCLCPP_ERROR(this->get_logger(), "No joint effort data received yet!");
+            return false;
+        }
 
-        // Record baseline while holding the tray in mid-air
-        double baseline_effort = std::abs(last_joint_state_.effort[1]); 
-        
+        double baseline_effort = std::abs(last_joint_state_.effort[1]);
+
         arm_->setMaxVelocityScalingFactor(0.05);
         geometry_msgs::msg::Pose target_pose = arm_->getCurrentPose().pose;
-        target_pose.position.z -= max_descend; // Moving DOWN
+        target_pose.position.z -= max_descend;
         arm_->setPoseTarget(target_pose);
-
-        arm_->asyncMove(); 
+        arm_->asyncMove();
 
         rclcpp::Rate loop_rate(50);
         auto start_time = this->now();
-        
         while (rclcpp::ok()) {
-            double current_effort = std::abs(last_joint_state_.effort[1]);
-            
-            // CONTACT DETECTED: Effort drops because the rack is now holding the tray
-            if (current_effort < (baseline_effort - effort_drop_threshold)) {
-                arm_->stop(); 
-                RCLCPP_INFO(this->get_logger(), "Placement contact! Tray is seated.");
-                return true; 
+            if (last_joint_state_.effort.size() > 1) {
+                double current_effort = std::abs(last_joint_state_.effort[1]);
+                if (std::abs(current_effort - baseline_effort) > effort_drop_threshold) {
+                    arm_->stop();
+                    RCLCPP_INFO(this->get_logger(), "Placement contact! Effort delta: %.2f", current_effort - baseline_effort);
+                    return true;
+                }
             }
 
             if ((this->now() - start_time).seconds() > 5.0) {
@@ -521,6 +516,10 @@ public:
         // --- Phase 2: Cartesian insertion seeded from current state ---
         arm_->setMaxVelocityScalingFactor(0.2);
         arm_->setMaxAccelerationScalingFactor(0.15);
+        if (pick){
+            gripper_->setJointValueTarget(gripper_open_);
+            gripper_->move();
+        }
 
         moveit::core::RobotStatePtr pre_insert_state = arm_->getCurrentState(5.0);
         if (!pre_insert_state) {
@@ -702,7 +701,7 @@ int main(int argc, char** argv) {
 
 
     if (!refined.empty()) {
-        node->face_rack_slot(refined[0], 5, true);
+        node->face_rack_slot(refined[0], 7, true);
         node->face_rack_slot(refined[1], 5, false, true);
         node->face_rack_slot(refined[0], 4);
         node->face_rack_slot(refined[1], 5);

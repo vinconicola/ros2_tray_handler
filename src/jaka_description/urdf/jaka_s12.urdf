@@ -634,6 +634,26 @@
             <mechanicalReduction>1</mechanicalReduction>
         </actuator>
     </transmission>
+
+    <gazebo reference="joint_1">
+      <provideFeedback>true</provideFeedback>
+    </gazebo>
+    <gazebo reference="joint_2">
+      <provideFeedback>true</provideFeedback>
+    </gazebo>
+    <gazebo reference="joint_3">
+      <provideFeedback>true</provideFeedback>
+    </gazebo>
+    <gazebo reference="joint_4">
+      <provideFeedback>true</provideFeedback>
+    </gazebo>
+    <gazebo reference="joint_5">
+      <provideFeedback>true</provideFeedback>
+    </gazebo>
+    <gazebo reference="joint_6">
+      <provideFeedback>true</provideFeedback>
+    </gazebo>
+
     <gazebo>
         <!-- <plugin name="gazebo_ros2_control" filename="libgazebo_ros2_control.so"> -->
         <plugin name="gz_ros2_control::GazeboSimROS2ControlPlugin" filename="libgz_ros2_control-system.so">

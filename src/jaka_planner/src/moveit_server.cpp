@@ -235,15 +235,21 @@ void goalCb(const shared_ptr<rclcpp_action::ServerGoalHandle<control_msgs::actio
 void joint_states_callback(rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr &joint_states_pub)
 {
     sensor_msgs::msg::JointState joint_msg;
-    // RobotStatus robotstatus;
+    RobotStatus robotstatus;
     JointValue joint_position;
-    // robot.get_robot_status(&robotstatus);
-    robot.get_joint_position(&joint_position);
+    int status_ret = robot.get_robot_status(&robotstatus);
+    if (status_ret != ERR_SUCC) {
+        robot.get_joint_position(&joint_position);
+    }
 
     for (int i = 0; i < 6; i++)
     {
-        // joint_msg.position.push_back(robotstatus.joint_position[i]);
-        joint_msg.position.push_back(joint_position.jVal[i]);
+        if (status_ret == ERR_SUCC) {
+            joint_msg.position.push_back(robotstatus.joint_position[i]);
+            joint_msg.effort.push_back(robotstatus.robot_monitor_data.jointMonitorData[i].instTorq);
+        } else {
+            joint_msg.position.push_back(joint_position.jVal[i]);
+        }
         joint_msg.name.push_back("joint_" + to_string(i+1));
     }
     joint_msg.header.stamp = rclcpp::Clock().now();
