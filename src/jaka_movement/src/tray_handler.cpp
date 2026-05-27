@@ -31,7 +31,7 @@ public:
         base_config_ = {0.0, 2.513, -2.471, -0.541, -1.5708, 0.8754};
         //approach_config_ = {0.0, 0.716, -2.496, 1.780, -1.5708, 0.8754};
         approach_config_ = {0.0, 1.937, -2.758, 0.820, -1.5708, 0.8754};
-        gripper_closed_ = {0.0};
+        gripper_closed_ = {0.005};
         gripper_open_ = {0.065};
         tray_slot_base_height_ = 0.15;
         tray_slot_offset_ = 0.11;
@@ -305,88 +305,6 @@ public:
     void clearConstraints() {
         arm_->clearPathConstraints();
     }
-
-    bool lift_until_touch(double max_lift = 0.05, double effort_threshold = 2.0) {
-        // 1. Ensure we have joint data
-        if (last_joint_state_.effort.empty()) {
-            RCLCPP_ERROR(this->get_logger(), "No joint state data received yet!");
-            return false;
-        }
-
-        // 2. Record baseline (Joint 2 is typically index 1)
-        double baseline_effort = std::abs(last_joint_state_.effort[1]); 
-        
-        // 3. Set a very slow upward target
-        arm_->setMaxVelocityScalingFactor(0.05);
-        geometry_msgs::msg::Pose target_pose = arm_->getCurrentPose().pose;
-        target_pose.position.z += max_lift;
-        arm_->setPoseTarget(target_pose);
-
-        // 4. Start movement asynchronously
-        // Note: In Humble/Rolling, asyncExecute returns a MoveItErrorCode immediately.
-        // We use move() in a separate thread or simply poll while the robot is moving.
-        arm_->asyncMove(); 
-
-        // 5. Poll effort until contact or motion ends
-        rclcpp::Rate loop_rate(50); // 50Hz polling
-        auto start_time = this->now();
-        
-        while (rclcpp::ok()) {
-            double current_effort = std::abs(last_joint_state_.effort[1]);
-            
-            // CONTACT DETECTED
-            if (current_effort > (baseline_effort + effort_threshold)) {
-                arm_->stop(); 
-                RCLCPP_INFO(this->get_logger(), "TOUCH! Effort Spike: %.2f", current_effort);
-                return true; 
-            }
-
-            // Safety timeout (e.g., if move takes longer than 5 seconds)
-            if ((this->now() - start_time).seconds() > 5.0) {
-                arm_->stop();
-                break;
-            }
-
-            loop_rate.sleep();
-        }
-
-        return false;
-    }
-    
-    bool drop_until_touch(double max_descend = 0.05, double effort_drop_threshold = 1.5) {
-        if (last_joint_state_.effort.empty()) return false;
-
-        // Record baseline while holding the tray in mid-air
-        double baseline_effort = std::abs(last_joint_state_.effort[1]); 
-        
-        arm_->setMaxVelocityScalingFactor(0.05);
-        geometry_msgs::msg::Pose target_pose = arm_->getCurrentPose().pose;
-        target_pose.position.z -= max_descend; // Moving DOWN
-        arm_->setPoseTarget(target_pose);
-
-        arm_->asyncMove(); 
-
-        rclcpp::Rate loop_rate(50);
-        auto start_time = this->now();
-        
-        while (rclcpp::ok()) {
-            double current_effort = std::abs(last_joint_state_.effort[1]);
-            
-            // CONTACT DETECTED: Effort drops because the rack is now holding the tray
-            if (current_effort < (baseline_effort - effort_drop_threshold)) {
-                arm_->stop(); 
-                RCLCPP_INFO(this->get_logger(), "Placement contact! Tray is seated.");
-                return true; 
-            }
-
-            if ((this->now() - start_time).seconds() > 5.0) {
-                arm_->stop();
-                break;
-            }
-            loop_rate.sleep();
-        }
-        return false;
-    }
     
     // --- 4. INSERTION ---
     bool face_rack_slot(const Rack& rack, int slot_index, bool pick=false, bool place=false) {
@@ -399,54 +317,18 @@ public:
         Eigen::Isometry3d rack_eigen = tf2::transformToEigen(rack.transform);
         Eigen::Vector3d rack_normal  = rack_eigen.rotation().col(0).normalized();
         
-        Eigen::Vector3d slot_pos_w(
-            rack_eigen.translation().x(),
-            rack_eigen.translation().y(),
-            tray_slot_base_height_ + (slot_index * tray_slot_offset_));
-
-        if(pick) {
-            request_yolo_scan();
-            for (int t = 0; t < 20; ++t) {
-                std::string tray_frame = "tray_" + std::to_string(t);
-                RCLCPP_INFO(this->get_logger(), "Looking up TF for %s during pick alignment", tray_frame.c_str());
-                if (!frame_exists(tray_frame)) {
-                    RCLCPP_INFO(this->get_logger(),
-                        "Frame %s does not exist during pick alignment. Ending pick tray sweep.",
-                        tray_frame.c_str());
-                    break;
-                }
-                try {
-                    auto tf = tf_buffer_->lookupTransform("world", tray_frame, tf2::TimePointZero);
-                    Eigen::Vector3d tray_pos(
-                        tf.transform.translation.x,
-                        tf.transform.translation.y,
-                        tf.transform.translation.z);
-
-                    double xy_dist = std::hypot(tray_pos.x() - rack_eigen.translation().x(), tray_pos.y() - rack_eigen.translation().y());
-                    double xyz_dist = std::hypot(xy_dist, tray_pos.z()- (tray_slot_base_height_ + (slot_index * tray_slot_offset_)));
-                    if (xy_dist > 0.06) {continue;}
-
-                    slot_pos_w = Eigen::Vector3d(
-                        tray_pos.x(),
-                        tray_pos.y(),
-                        tray_pos.z() - 0.04
-                    );
-                    break;
-
-                } catch (const tf2::TransformException& ex) {
-                    RCLCPP_WARN(this->get_logger(),
-                        "Tray TF lookup failed for %s during pick alignment: %s",
-                        tray_frame.c_str(), ex.what());
-                    continue;
-                }
-            }
-        } else if (place) {
-            slot_pos_w = Eigen::Vector3d(
-            rack_eigen.translation().x(),
-            rack_eigen.translation().y(),
-            tray_slot_base_height_ + (slot_index * tray_slot_offset_) + 0.03 );
+        float pick_place_offset = 0;
+        if(pick){
+            pick_place_offset = -0.005;
+        } else if(place){
+            pick_place_offset = 0.01;
         }
 
+        Eigen::Vector3d slot_pos_w(
+            rack_eigen.translation().x() + rack_normal.x()*0.06,
+            rack_eigen.translation().y() + rack_normal.y()*0.06,
+            tray_slot_base_height_ + (slot_index * tray_slot_offset_) + pick_place_offset);
+        
         Eigen::Vector3d z_axis = -rack_normal;
         Eigen::Vector3d world_up(0, 0, 1);
         Eigen::Vector3d x_axis = world_up.cross(z_axis).normalized();
@@ -467,7 +349,7 @@ public:
         geometry_msgs::msg::Pose approach;
         approach.orientation = tf2::toMsg(target_quat);
         setHeightConstraint(1.2);
-        for (double dist : {0.65, 0.65, 0.60}) {
+        for (double dist : {0.60, 0.60, 0.55}) {
             Eigen::Vector3d approach_pos_w = slot_pos_w + (rack_normal * dist);
             approach.position = tf2::toMsg(approach_pos_w);
 
@@ -487,29 +369,29 @@ public:
                 break;
             }
 
-            RCLCPP_WARN(this->get_logger(), "PILZ PTP failed at %.2fm, trying OMPL fallback", dist);
+            // RCLCPP_WARN(this->get_logger(), "PILZ PTP failed at %.2fm, trying OMPL fallback", dist);
 
-            // OMPL fallback — seeded from current state to prevent joint flips
-            moveit::core::RobotStatePtr current_state = arm_->getCurrentState(5.0);
-            if (!current_state) {
-                RCLCPP_ERROR(this->get_logger(), "Failed to get current state");
-                return false;
-            }
-            arm_->setStartState(*current_state);
-            useOMPL();
-            arm_->setMaxVelocityScalingFactor(0.4);
-            arm_->setMaxAccelerationScalingFactor(0.3);
-            arm_->setPoseTarget(approach);
+            // // OMPL fallback — seeded from current state to prevent joint flips
+            // moveit::core::RobotStatePtr current_state = arm_->getCurrentState(5.0);
+            // if (!current_state) {
+            //     RCLCPP_ERROR(this->get_logger(), "Failed to get current state");
+            //     return false;
+            // }
+            // arm_->setStartState(*current_state);
+            // useOMPL();
+            // arm_->setMaxVelocityScalingFactor(0.4);
+            // arm_->setMaxAccelerationScalingFactor(0.3);
+            // arm_->setPoseTarget(approach);
 
-            if (arm_->move() == moveit::core::MoveItErrorCode::SUCCESS) {
-                RCLCPP_INFO(this->get_logger(), "OMPL fallback approach succeeded at %.2fm", dist);
-                approach_reached = true;
-                clearConstraints();
-                break;
-            }
+            // if (arm_->move() == moveit::core::MoveItErrorCode::SUCCESS) {
+            //     RCLCPP_INFO(this->get_logger(), "OMPL fallback approach succeeded at %.2fm", dist);
+            //     approach_reached = true;
+            //     clearConstraints();
+            //     break;
+            // }
 
-            RCLCPP_WARN(this->get_logger(), "OMPL fallback also failed at %.2fm, trying closer", dist);
-            clearConstraints();
+            // RCLCPP_WARN(this->get_logger(), "OMPL fallback also failed at %.2fm, trying closer", dist);
+            // clearConstraints();
         }
 
         if (!approach_reached) {
@@ -517,6 +399,58 @@ public:
             return false;
         }
 
+        if (pick) {
+            request_yolo_scan();
+            gripper_->setJointValueTarget(gripper_open_);
+            gripper_->move();
+            for (int t = 0; t < 20; ++t) {
+                std::string tray_frame = "tray_" + std::to_string(t);
+                if (!frame_exists(tray_frame)) break;
+                try {
+                    auto tf = tf_buffer_->lookupTransform("world", tray_frame, tf2::TimePointZero);
+                    Eigen::Vector3d tray_pos(
+                        tf.transform.translation.x,
+                        tf.transform.translation.y,
+                        tf.transform.translation.z);
+
+                    double xy_dist = std::hypot(
+                        tray_pos.x() - rack_eigen.translation().x(),
+                        tray_pos.y() - rack_eigen.translation().y());
+                    double z_dist = std::abs(tray_pos.z() - (tray_slot_base_height_ + (slot_index * tray_slot_offset_)));
+                    if (xy_dist > 0.15 || z_dist > 0.05) continue;
+                    
+                    RCLCPP_WARN(this->get_logger(), "Tray detected");
+
+                    Eigen::Isometry3d tray_eigen = tf2::transformToEigen(tf);
+                    Eigen::Vector3d tray_normal  = tray_eigen.rotation().col(0).normalized();
+
+                    Eigen::Vector3d z_axis    = -tray_normal;
+                    Eigen::Vector3d world_up(0, 0, 1);
+                    Eigen::Vector3d x_axis    = world_up.cross(z_axis).normalized();
+                    Eigen::Vector3d y_axis    = z_axis.cross(x_axis).normalized();
+
+                    Eigen::Matrix3d tray_rot;
+                    tray_rot.col(0) = x_axis;
+                    tray_rot.col(1) = y_axis;
+                    tray_rot.col(2) = z_axis;
+                    Eigen::Quaterniond tray_quat(tray_rot);
+
+                    // Update target position and orientation
+                    target.position.x  = tray_pos.x() - tray_normal.x() * 0.01;
+                    target.position.y  = tray_pos.y() - tray_normal.y() * 0.01;
+                    target.position.z  = tray_pos.z() - 0.005;
+                    target.orientation = tf2::toMsg(tray_quat);
+                
+                    approach.orientation = tf2::toMsg(tray_quat);
+
+                    break;
+
+                } catch (const tf2::TransformException& ex) {
+                    RCLCPP_WARN(this->get_logger(), "Tray TF lookup failed for %s: %s", tray_frame.c_str(), ex.what());
+                    continue;
+                }
+            }
+        }
 
         // --- Phase 2: Cartesian insertion seeded from current state ---
         arm_->setMaxVelocityScalingFactor(0.2);
@@ -563,42 +497,44 @@ public:
 
         rclcpp::sleep_for(2s);
 
-        if(pick){
-            lift_until_touch();
-            gripper_->setJointValueTarget(gripper_closed_);
-            gripper_->move();
-            
+        if (pick) {
             geometry_msgs::msg::PoseStamped current_pose = arm_->getCurrentPose();
-    
-            geometry_msgs::msg::Pose target_pose = current_pose.pose;
-            target_pose.position.z += 0.03; 
+            geometry_msgs::msg::Pose lift_pose = current_pose.pose;
+            lift_pose.position.z += 0.01;
 
-            
-            usePILZ("PTP"); // Use the industrial PTP planner for consistency
-            arm_->setMaxVelocityScalingFactor(0.1);     
-            arm_->setMaxAccelerationScalingFactor(0.1); 
-
-            // 4. Set the goal
-            arm_->setPoseTarget(target_pose);
+            usePILZ("PTP");
+            arm_->setMaxVelocityScalingFactor(0.1);
+            arm_->setMaxAccelerationScalingFactor(0.1);
+            arm_->setPoseTarget(lift_pose);
             arm_->move();
 
-        }else if (place){
-            drop_until_touch();
+            gripper_->setJointValueTarget(gripper_closed_);
+            gripper_->move();
+
+            current_pose = arm_->getCurrentPose();
+            geometry_msgs::msg::Pose lift_pose2 = current_pose.pose;
+            lift_pose2.position.z += 0.02;
+            arm_->setPoseTarget(lift_pose2);
+            arm_->move();
+
+        } else if (place) {
+            geometry_msgs::msg::PoseStamped current_pose = arm_->getCurrentPose();
+            geometry_msgs::msg::Pose drop_pose = current_pose.pose;
+            drop_pose.position.z -= 0.01;
+
+            usePILZ("PTP");
+            arm_->setMaxVelocityScalingFactor(0.1);
+            arm_->setMaxAccelerationScalingFactor(0.1);
+            arm_->setPoseTarget(drop_pose);
+            arm_->move();
+
             gripper_->setJointValueTarget(gripper_open_);
             gripper_->move();
-            
-            geometry_msgs::msg::PoseStamped current_pose = arm_->getCurrentPose();
-    
-            geometry_msgs::msg::Pose target_pose = current_pose.pose;
-            target_pose.position.z -= 0.015; 
 
-            
-            usePILZ("PTP"); // Use the industrial PTP planner for consistency
-            arm_->setMaxVelocityScalingFactor(0.1);     
-            arm_->setMaxAccelerationScalingFactor(0.1); 
-
-            // 4. Set the goal
-            arm_->setPoseTarget(target_pose);
+            current_pose = arm_->getCurrentPose();
+            geometry_msgs::msg::Pose retreat_pose = current_pose.pose;
+            retreat_pose.position.z -= 0.01;
+            arm_->setPoseTarget(retreat_pose);
             arm_->move();
         }
 
@@ -617,9 +553,9 @@ public:
         // Approach = original approach but offset vertically based on operation
         geometry_msgs::msg::Pose retract_approach = approach;
         if (pick) {
-            retract_approach.position.z += 0.07;  // 7cm higher for pick
+            retract_approach.position.z += 0.02;  // 2cm higher for pick
         } else if (place) {
-            retract_approach.position.z -= 0.06;  // 6cm lower for place
+            retract_approach.position.z -= 0.02;  // 2cm lower for place
         }
 
         waypoints = { retract_target, retract_approach };
@@ -652,7 +588,10 @@ public:
         arm_->execute(trajectory);
         RCLCPP_INFO(this->get_logger(), "Cartesian retraction succeeded");
 
-        arm_->setJointValueTarget(approach_state);
+        std::vector<double> retract_state = approach_state;
+        retract_state[0] = arm_->getCurrentJointValues()[0];
+
+        arm_->setJointValueTarget(retract_state);
         arm_->move();
         return true;
     }
@@ -702,7 +641,7 @@ int main(int argc, char** argv) {
 
 
     if (!refined.empty()) {
-        node->face_rack_slot(refined[0], 5, true);
+        node->face_rack_slot(refined[0], 7, true);
         node->face_rack_slot(refined[1], 5, false, true);
         node->face_rack_slot(refined[0], 4);
         node->face_rack_slot(refined[1], 5);

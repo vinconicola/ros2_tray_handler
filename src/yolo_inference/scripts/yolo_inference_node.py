@@ -14,13 +14,12 @@ import numpy as np
 from ultralytics import YOLO
 import cv2
 from scipy import ndimage
+import scipy.signal
 from rclpy.time import Time
 
 
 IMG_W = 640
 IMG_H = 480
-
-RACK_WIDTH = 0.46  # meters from center of left and right arm
 
 CLASS_NAMES  = {0: 'tray', 1: 'rack'}
 CLASS_COLORS = {
@@ -32,7 +31,7 @@ MODEL_PATH = '/home/nicola/ros2_ws/src/yolo_inference/weights/best_sim.pt'
 
 # Filtering parameters
 MIN_CLUSTER_POINTS = 100    # ignore tiny detections
-MAX_DEPTH          = 8.0    # ignore points further than 8m
+MAX_DEPTH          = 3.0    # ignore points further than 3m
 MIN_DEPTH          = 0.3    # ignore points closer than 0.3m
 
 
@@ -153,82 +152,98 @@ class YoloInferenceNode(Node):
         return points[inliers]
     
     def get_surface_with_normal(self, points, label='object'):
-        """Get front vertical face center with horizontal normal for each stacked tray layer."""
+        """
+        Find front vertical face center and inward normal for each stacked tray layer.
+        Returns a list of (centroid_3d, normal_3d) tuples, one per detected tray layer.
+        """
         if len(points) < 50:
             return []
 
-        # ── Closest dense cluster in XY distance (world coords) ──────────────────
-        xy_dist = np.sqrt(points[:, 0]**2 + points[:, 1]**2)
+        # ── Step 1: Detect tray layers by Z histogram peaks ───────────────────────
+        z_vals          = points[:, 2]
+        n_bins          = max(20, min(60, len(points) // 10))
+        z_hist, z_edges = np.histogram(z_vals, bins=n_bins)
+        z_bin_width     = z_edges[1] - z_edges[0]
+        z_centers       = (z_edges[:-1] + z_edges[1:]) / 2.0
 
-        hist, bin_edges = np.histogram(xy_dist, bins=20)
-        threshold = hist.max() * 0.05
-        first_bin = next((i for i, h in enumerate(hist) if h > threshold), None)
-        if first_bin is None:
+        min_sep_bins = max(1, int(0.10 / z_bin_width))
+
+        peak_indices, _ = scipy.signal.find_peaks(
+            z_hist,
+            height=z_hist.max() * 0.1,
+            distance=min_sep_bins,
+        )
+
+        if len(peak_indices) == 0:
             return []
 
-        cluster_end = first_bin
-        for i in range(first_bin, len(hist)):
-            if hist[i] > threshold:
-                cluster_end = i
-            else:
-                if all(h <= threshold for h in hist[i:i+3]):
-                    break
-
-        dist_min = bin_edges[first_bin]
-        dist_max = bin_edges[cluster_end + 1]
-        cluster  = points[(xy_dist >= dist_min) & (xy_dist <= dist_max)]
-
-        if len(cluster) < 30:
-            return []
-
-        # ── Split into individual trays by Z (stacked, min 10cm apart) ───────────
-        z_vals      = cluster[:, 2]
-        z_hist, z_edges = np.histogram(z_vals, bins=40)
-        z_bin_width = z_edges[1] - z_edges[0]
-
-        min_separation_bins = max(1, int(0.10 / z_bin_width))
-        peak_bins = []
-        for i, h in enumerate(z_hist):
-            if h < z_hist.max() * 0.1:
-                continue
-            if not peak_bins or (i - peak_bins[-1]) >= min_separation_bins:
-                peak_bins.append(i)
-            elif z_hist[i] > z_hist[peak_bins[-1]]:
-                peak_bins[-1] = i
-
-        if not peak_bins:
-            return []
-
+        # ── Step 2: Per-layer processing ──────────────────────────────────────────
         results = []
-        for pb in peak_bins:
-            z_peak = (z_edges[pb] + z_edges[pb + 1]) / 2.0
-            layer  = cluster[np.abs(cluster[:, 2] - z_peak) < 2 * z_bin_width]
 
+        for idx, peak_idx in enumerate(peak_indices):
+
+            # Layer Z bounds = valleys between this peak and its neighbors
+            z_lo = z_edges[0] if idx == 0 else \
+                z_centers[peak_indices[idx - 1]:peak_idx + 1][
+                    np.argmin(z_hist[peak_indices[idx - 1]:peak_idx + 1])
+                ]
+            z_hi = z_edges[-1] if idx == len(peak_indices) - 1 else \
+                z_centers[peak_idx:peak_indices[idx + 1] + 1][
+                    np.argmin(z_hist[peak_idx:peak_indices[idx + 1] + 1])
+                ]
+
+            layer = points[(points[:, 2] >= z_lo) & (points[:, 2] <= z_hi)]
             if len(layer) < 20:
                 continue
 
-            layer_xy_dist   = np.sqrt(layer[:, 0]**2 + layer[:, 1]**2)
-            front_threshold = np.percentile(layer_xy_dist, 20)
-            front_points    = layer[layer_xy_dist <= front_threshold]
+            # ── Step 3: PCA on layer XY to find width and depth vectors ──────────
+            pts_2d      = layer[:, :2]
+            centroid_2d = pts_2d.mean(axis=0)
+            centered    = pts_2d - centroid_2d
+            cov         = np.cov(centered.T)
+            vals, vecs  = np.linalg.eigh(cov)
 
-            if len(front_points) < 10:
+            vec0 = vecs[:, 0]  # smallest variance
+            vec1 = vecs[:, 1]  # largest variance
+
+            rack_dir = -centroid_2d / (np.linalg.norm(centroid_2d) + 1e-6)
+
+            if abs(np.dot(vec0, rack_dir)) >= abs(np.dot(vec1, rack_dir)):
+                depth_vec = vec0
+                width_vec = vec1
+            else:
+                depth_vec = vec1
+                width_vec = vec0
+
+            if np.dot(depth_vec, rack_dir) < 0:
+                depth_vec = -depth_vec
+
+            # ── Step 4: Keep only the nearest 40% in depth projection ────────────
+            depth_proj_all  = layer[:, :2] @ depth_vec
+            dp_min          = depth_proj_all.min()
+            dp_max          = depth_proj_all.max()
+            cluster         = layer[depth_proj_all >= dp_min + (dp_max - dp_min) * 0.6]
+            if len(cluster) < 20:
                 continue
 
-            centroid     = layer.mean(axis=0).copy()
-            centroid[:2] = front_points[:, :2].mean(axis=0)
-
-            centered = front_points - front_points.mean(axis=0)
-            cov      = np.cov(centered.T)
-            _, eigenvectors = np.linalg.eigh(cov)
-            normal   = eigenvectors[:, 0].copy()
-            normal[2] = 0.0
-            norm_len  = np.linalg.norm(normal)
-            if norm_len < 1e-6:
+            # ── Step 5: Isolate front face — top 20% in depth projection ─────────
+            depth_proj      = cluster[:, :2] @ depth_vec
+            front_threshold = np.percentile(depth_proj, 80)
+            front_points    = cluster[depth_proj >= front_threshold]
+            if len(front_points) < 5:
                 continue
-            normal = normal / norm_len
 
-            if np.dot(normal, centroid) > 0:
-                normal = -normal
+            # ── Step 6: Centroid — geometric center along width, z from peak ──────
+            width_proj   = front_points[:, :2] @ width_vec
+            center_width = (width_proj.min() + width_proj.max()) / 2.0
+            center_depth = depth_proj[depth_proj >= front_threshold].mean()
+
+            center_xy = center_width * width_vec + center_depth * depth_vec
+            z_center  = front_points[:, 2].min()
+            centroid  = np.array([center_xy[0], center_xy[1], z_center])
+
+            # ── Step 7: Normal = depth_vec (already points toward robot) ─────────
+            normal = np.array([depth_vec[0], depth_vec[1], 0.0])
 
             results.append((centroid, normal))
 
@@ -311,8 +326,18 @@ class YoloInferenceNode(Node):
         if left_tip is None or right_tip is None:
             return None, None
 
-        # ── Step 6: Opening center = midpoint of the two tips ─────────────────────
-        center_xy = (left_tip + right_tip) / 2.0
+        # ── Step 6: Opening center = midpoint of outer edges ──────────────────────
+        left_face_proj  = left_cluster[:,  :2] @ face_vec
+        right_face_proj = right_cluster[:, :2] @ face_vec
+
+        # Outer edge = points furthest from the gap (bottom 10% by face projection)
+        left_outer_pts  = left_cluster[left_face_proj  <= np.percentile(left_face_proj,  10)]
+        right_outer_pts = right_cluster[right_face_proj >= np.percentile(right_face_proj, 90)]
+
+        left_outer  = left_outer_pts[:,  :2].mean(axis=0)
+        right_outer = right_outer_pts[:, :2].mean(axis=0)
+
+        center_xy = (left_outer + right_outer) / 2.0
         z_center  = cluster[:, 2].mean()
         centroid  = np.array([center_xy[0], center_xy[1], z_center])
 
@@ -463,7 +488,7 @@ class YoloInferenceNode(Node):
         # fy = (480/2) / tan(42.5°/2) = 617.1
         # sim FOV
         fx = 462.1
-        fy = 462.1
+        fy = 455
 
         cx = 320.0
         cy = 240.0
