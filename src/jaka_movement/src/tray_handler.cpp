@@ -31,11 +31,23 @@ public:
         base_config_ = {0.0, 2.513, -2.471, -0.541, -1.5708, 0.8754};
         //approach_config_ = {0.0, 0.716, -2.496, 1.780, -1.5708, 0.8754};
         approach_config_ = {0.0, 1.937, -2.758, 0.820, -1.5708, 0.8754};
-        gripper_closed_ = {0.005};
+        gripper_closed_ = {0.015};
         gripper_open_ = {0.065};
         tray_slot_base_height_ = 0.15;
         tray_slot_offset_ = 0.11;
+        
     }
+    const geometry_msgs::msg::Pose BOX_POSE = []() {
+        geometry_msgs::msg::Pose p;
+        p.position.x    = -1.125;
+        p.position.y    =  0.24;
+        p.position.z    =  0.45;
+        p.orientation.x =  0.0;
+        p.orientation.y =  0.0;
+        p.orientation.z =  0.0;
+        p.orientation.w =  1.0;
+        return p;
+    }();
 
     void init() {
         arm_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(shared_from_this(), "jaka_s12");
@@ -436,8 +448,8 @@ public:
                     Eigen::Quaterniond tray_quat(tray_rot);
 
                     // Update target position and orientation
-                    target.position.x  = tray_pos.x() - tray_normal.x() * 0.01;
-                    target.position.y  = tray_pos.y() - tray_normal.y() * 0.01;
+                    target.position.x  = tray_pos.x() - tray_normal.x() * 0.001;
+                    target.position.y  = tray_pos.y() - tray_normal.y() * 0.001;
                     target.position.z  = tray_pos.z() - 0.005;
                     target.orientation = tf2::toMsg(tray_quat);
                 
@@ -450,6 +462,8 @@ public:
                     continue;
                 }
             }
+        } else if(place){
+            request_yolo_scan();
         }
 
         // --- Phase 2: Cartesian insertion seeded from current state ---
@@ -596,6 +610,106 @@ public:
         return true;
     }
 
+    bool place_on_box(const geometry_msgs::msg::Pose& box_pose) {
+
+        // ── Step 1: Rotate joint 0 to face the box ────────────────────────────────
+        double angle = std::atan2(box_pose.position.y, box_pose.position.x);
+        std::vector<double> face_state = approach_config_;
+        face_state[0] = angle + approach_config_[0];
+
+        usePILZ("PTP");
+        arm_->setMaxVelocityScalingFactor(0.4);
+        arm_->setMaxAccelerationScalingFactor(0.3);
+        arm_->setJointValueTarget(face_state);
+        if (arm_->move() != moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_ERROR(this->get_logger(), "Failed to rotate to face box");
+            return false;
+        }
+
+        // ── Step 2: Build target orientation — Extract box normal from pose orientation ───────
+        Eigen::Quaterniond box_quat(
+            box_pose.orientation.w,
+            box_pose.orientation.x,
+            box_pose.orientation.y,
+            box_pose.orientation.z);
+
+        // Box normal = X axis of the box frame (col(0) of rotation matrix)
+        Eigen::Vector3d box_normal = box_quat.toRotationMatrix().col(0).normalized();
+
+        Eigen::Vector3d z_axis    = -box_normal;     
+        Eigen::Vector3d world_up(0.0, 0.0, 1.0);
+        Eigen::Vector3d x_axis    = world_up.cross(z_axis).normalized();
+        Eigen::Vector3d y_axis    = z_axis.cross(x_axis).normalized();
+
+        Eigen::Matrix3d rot_mat;
+        rot_mat.col(0) = x_axis;
+        rot_mat.col(1) = y_axis;
+        rot_mat.col(2) = z_axis;
+        Eigen::Quaterniond target_quat(rot_mat);
+
+        // ── Step 3: Target pose — 15cm along normal from box surface ──────────────
+        geometry_msgs::msg::Pose target;
+        target.position.x  = box_pose.position.x + box_normal.x() * 0.10;
+        target.position.y  = box_pose.position.y + box_normal.y() * 0.10;
+        target.position.z  = box_pose.position.z;
+        target.orientation = tf2::toMsg(target_quat);
+
+        // ── Step 4: PTP move to target ────────────────────────────────────────────
+        usePILZ("PTP");
+        arm_->setMaxVelocityScalingFactor(0.3);
+        arm_->setMaxAccelerationScalingFactor(0.2);
+        arm_->setPoseTarget(target);
+        if (arm_->move() != moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_ERROR(this->get_logger(), "Failed to reach box target pose");
+            return false;
+        }
+
+        rclcpp::sleep_for(1s);
+
+        // ── Step 5: Release tray — lower Z, open gripper, small retreat ───────────
+        gripper_->setJointValueTarget(gripper_open_);
+        gripper_->move();
+
+        geometry_msgs::msg::PoseStamped current_stamped = arm_->getCurrentPose();
+        geometry_msgs::msg::Pose drop_pose = current_stamped.pose;
+        drop_pose.position.z -= 0.01;
+
+        arm_->setMaxVelocityScalingFactor(0.1);
+        arm_->setMaxAccelerationScalingFactor(0.1);
+        arm_->setPoseTarget(drop_pose);
+        arm_->move();
+
+        
+
+        // ── Step 6: Retreat 30cm along normal (+X) ────────────────────────────────
+        current_stamped = arm_->getCurrentPose();
+        geometry_msgs::msg::Pose retreat_pose = current_stamped.pose;
+        retreat_pose.position.x += box_normal.x() * 0.30;
+        retreat_pose.position.y += box_normal.y() * 0.30;
+
+        arm_->setMaxVelocityScalingFactor(0.2);
+        arm_->setMaxAccelerationScalingFactor(0.2);
+        arm_->setPoseTarget(retreat_pose);
+        arm_->move();
+
+        // ── Step 7: Return to approach config keeping joint 0 facing box ──────────
+        std::vector<double> return_state = approach_config_;
+        return_state[0] = face_state[0];
+
+        usePILZ("PTP");
+        arm_->setMaxVelocityScalingFactor(0.4);
+        arm_->setMaxAccelerationScalingFactor(0.3);
+        arm_->setJointValueTarget(return_state);
+        if (arm_->move() != moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_ERROR(this->get_logger(), "Failed to return to approach config");
+            return false;
+        }
+        gripper_->setJointValueTarget(gripper_closed_);
+        gripper_->move();
+
+        return true;
+    }
+    
 private:
     bool frame_exists(const std::string& frame) const {
         const auto frames = tf_buffer_->getAllFrameNames();
@@ -635,14 +749,15 @@ int main(int argc, char** argv) {
     std::thread([&executor]() { executor.spin(); }).detach();
 
     node->init();
-
+    
     auto rough = node->find_racks();
     auto refined = node->refine_racks(rough);
 
 
     if (!refined.empty()) {
-        node->face_rack_slot(refined[0], 7, true);
-        node->face_rack_slot(refined[1], 5, false, true);
+        node->face_rack_slot(refined[0], 3, true);
+        node->place_on_box(node->BOX_POSE);
+        node->face_rack_slot(refined[1], 5);
         node->face_rack_slot(refined[0], 4);
         node->face_rack_slot(refined[1], 5);
         node->face_rack_slot(refined[0], 2);
