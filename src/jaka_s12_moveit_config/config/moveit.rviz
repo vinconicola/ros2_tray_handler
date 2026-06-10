@@ -9,6 +9,7 @@ Panels:
         - /TF1/Frames1
         - /Image1
         - /Image1/Topic1
+        - /MarkerArray1
       Splitter Ratio: 0.5
     Tree Height: 162
   - Class: rviz_common/Help
@@ -312,19 +313,7 @@ Visualization Manager:
           Value: true
         camera_optical_frame:
           Value: true
-        rack_0:
-          Value: true
         tcp:
-          Value: true
-        tray_0:
-          Value: true
-        tray_1:
-          Value: true
-        tray_2:
-          Value: true
-        tray_3:
-          Value: true
-        tray_4:
           Value: true
         world:
           Value: true
@@ -354,18 +343,6 @@ Visualization Manager:
                               {}
                           tcp:
                             {}
-          rack_0:
-            {}
-          tray_0:
-            {}
-          tray_1:
-            {}
-          tray_2:
-            {}
-          tray_3:
-            {}
-          tray_4:
-            {}
       Update Interval: 0
       Value: true
     - Class: rviz_default_plugins/Image
@@ -381,6 +358,18 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /yolo/visualization
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /yolo/obb_markers
       Value: true
   Enabled: true
   Global Options:

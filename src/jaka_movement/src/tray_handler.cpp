@@ -27,7 +27,7 @@ struct Rack {
 class TrayHandler : public rclcpp::Node {
 public:
     TrayHandler() : Node("tray_handler") {
-        this->set_parameter(rclcpp::Parameter("use_sim_time", true));
+        this->set_parameter(rclcpp::Parameter("use_sim_time"));
         tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
@@ -98,6 +98,7 @@ public:
 
     void request_yolo_scan() {
         auto request = std::make_shared<std_srvs::srv::Trigger::Request>();
+        last_scan_time_ = this->now();
         RCLCPP_INFO(this->get_logger(), "Requesting YOLO scan...");
         while (!trigger_client_->wait_for_service(1s)) {
             RCLCPP_INFO(this->get_logger(), "Waiting for YOLO service...");
@@ -359,7 +360,7 @@ public:
         // Z is the max_z
         box.dimensions.resize(3);
         box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_X] = 10.0; 
-        box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Y] = 10.0;
+        box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Y] = 2.6;
         box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z] = max_z;
 
         // Define the Pose of the Box
@@ -367,7 +368,7 @@ public:
         // we must place the center of the box at Z = max_z / 2
         geometry_msgs::msg::Pose box_pose;
         box_pose.position.x = 0.0;
-        box_pose.position.y = 0.0;
+        box_pose.position.y = 1.3;
         box_pose.position.z = max_z / 2.0; 
         box_pose.orientation.w = 1.0;
 
@@ -403,7 +404,7 @@ public:
         if(pick){
             pick_place_offset = -0.005;
         } else if(place){
-            pick_place_offset = 0.01;
+            pick_place_offset = 0.03;
         }
 
         Eigen::Vector3d slot_pos_w(
@@ -431,7 +432,7 @@ public:
         geometry_msgs::msg::Pose approach;
         approach.orientation = tf2::toMsg(target_quat);
         setHeightConstraint(1.2);
-        for (double dist : {0.60, 0.60, 0.55}) {
+        for (double dist : {0.70, 0.70, 0.65}) {
             Eigen::Vector3d approach_pos_w = slot_pos_w + (rack_normal * dist);
             approach.position = tf2::toMsg(approach_pos_w);
 
@@ -486,7 +487,14 @@ public:
             set_gripper(false);
             for (int t = 0; t < 20; ++t) {
                 std::string tray_frame = "tray_" + std::to_string(t);
-                if (!frame_exists(tray_frame)) break;
+                if (!frame_exists(tray_frame)) {
+                    target.position.x -= rack_normal.x() * 0.04;
+                    target.position.y -= rack_normal.y() * 0.04;
+                    target.position.z -= 0.01;
+                    break;
+                }
+
+                
                 try {
                     auto tf = tf_buffer_->lookupTransform("world", tray_frame, tf2::TimePointZero);
                     Eigen::Vector3d tray_pos(
@@ -516,23 +524,20 @@ public:
                     tray_rot.col(2) = z_axis;
                     Eigen::Quaterniond tray_quat(tray_rot);
                     
-                    if(abs(target.position.x-tray_pos.x()) + abs(target.position.y - tray_pos.y() < 0.08)){
+                    if(abs(target.position.x-tray_pos.x()) + abs(target.position.y - tray_pos.y()) < 0.08){
                         // Update target position and orientation
-                        target.position.x = tray_pos.x()- tray_normal.x() * 0.015;
-                        target.position.y = tray_pos.y() - tray_normal.y() * 0.015;
-                        target.position.z = tray_pos.z() - 0.01;
+                        target.position.x = tray_pos.x()- tray_normal.x() * 0.02;
+                        target.position.y = tray_pos.y() - tray_normal.y() * 0.02;
+                        target.position.z = tray_pos.z() - 0.02;
                         target.orientation = tf2::toMsg(tray_quat);
-                        approach.orientation = tf2::toMsg(tray_quat);
+                        //approach.orientation = tf2::toMsg(tray_quat);
                     } else{
                         RCLCPP_INFO(this->get_logger(), "tray TF not close enough to the center of the rack");
-                        target.position.x -= rack_normal.x() * 0.05;
-                        target.position.y -= rack_normal.y() * 0.05;
+                        target.position.x -= rack_normal.x() * 0.04;
+                        target.position.y -= rack_normal.y() * 0.04;
                         target.position.z -= 0.01;
                     }
                     
-                    
-                    
-
                     break;
 
                 } catch (const tf2::TransformException& ex) {
@@ -541,7 +546,8 @@ public:
                 }
             }
         } else if(place){
-            request_yolo_scan();
+            target.position.x -= rack_normal.x() * 0.04;
+            target.position.y -= rack_normal.y() * 0.04;
         }
 
         // --- Phase 2: Cartesian insertion seeded from current state ---
@@ -562,12 +568,11 @@ public:
         // Eigen::Vector3d approach_pos_w = slot_pos_w + (rack_normal * 0.30);
         // approach.position = tf2::toMsg(approach_pos_w);
 
-        // Finer step + jump threshold to reject IK branch switches
         std::vector<geometry_msgs::msg::Pose> waypoints = { approach, target }; //target
         moveit_msgs::msg::RobotTrajectory trajectory;
         double fraction = arm_->computeCartesianPath(
             waypoints,
-            0.005,   
+            0.01,   
             2.0,     // jump_threshold: reject IK solutions where any joint jumps > 2 rad
             trajectory,
             false
@@ -583,7 +588,7 @@ public:
             return false;
         }
 
-        moveit::core::RobotStatePtr state = arm_->getCurrentState(5.0);
+        moveit::core::RobotStatePtr state = arm_->getCurrentState(1.0);
         robot_trajectory::RobotTrajectory rt(arm_->getRobotModel(), arm_->getName());
         rt.setRobotTrajectoryMsg(*state, trajectory);
 
@@ -597,7 +602,7 @@ public:
         arm_->execute(trajectory);
         RCLCPP_INFO(this->get_logger(), "Cartesian insertion succeeded");
 
-        rclcpp::sleep_for(2s);
+        //rclcpp::sleep_for(2s);
 
         
 
@@ -635,9 +640,12 @@ public:
             set_collision_level(3);
 
         } else if (place) {
+            RCLCPP_INFO(this->get_logger(), "Lowering collision sensitivity for placing state.");
+            set_collision_level(0);
+
             geometry_msgs::msg::PoseStamped current_pose = arm_->getCurrentPose();
             geometry_msgs::msg::Pose drop_pose = current_pose.pose;
-            drop_pose.position.z -= 0.01;
+            drop_pose.position.z -= 0.03;
 
             usePILZ("PTP");
             arm_->setMaxVelocityScalingFactor(0.1);
@@ -649,9 +657,11 @@ public:
 
             current_pose = arm_->getCurrentPose();
             geometry_msgs::msg::Pose retreat_pose = current_pose.pose;
-            retreat_pose.position.z -= 0.01;
+            retreat_pose.position.z -= 0.03;
             arm_->setPoseTarget(retreat_pose);
             arm_->move();
+            set_robot_payload(1.77, 0.0, 0.0, 65.0);
+            set_collision_level(3);
         }
 
         // --- Phase 3: Cartesian retraction seeded from post-insertion state ---
@@ -669,16 +679,16 @@ public:
         // Approach = original approach but offset vertically based on operation
         geometry_msgs::msg::Pose retract_approach = approach;
         if (pick) {
-            retract_approach.position.z += 0.02;  // 2cm higher for pick
+            retract_approach.position.z += 0.04;  // 4cm higher for pick
         } else if (place) {
-            retract_approach.position.z -= 0.02;  // 2cm lower for place
+            retract_approach.position.z -= 0.03;  // 2cm lower for place
         }
-
+        retract_approach.orientation = retract_target.orientation;
+        
         waypoints = { retract_target, retract_approach };
-        trajectory;
         fraction = arm_->computeCartesianPath(
             waypoints,
-            0.005,
+            0.01,
             2.0,
             trajectory,
             false
@@ -691,7 +701,7 @@ public:
             return false;
         }
 
-        state = arm_->getCurrentState(5.0);
+        state = arm_->getCurrentState(1);
         //rt(arm_->getRobotModel(), arm_->getName());
         rt.setRobotTrajectoryMsg(*state, trajectory);
 
@@ -835,8 +845,18 @@ public:
     
 private:
     bool frame_exists(const std::string& frame) const {
-        const auto frames = tf_buffer_->getAllFrameNames();
-        return std::find(frames.begin(), frames.end(), frame) != frames.end();
+        try {
+            auto tf = tf_buffer_->lookupTransform("world", frame, tf2::TimePointZero);
+            rclcpp::Time tf_time(tf.header.stamp);
+
+            if (last_scan_time_.nanoseconds() == 0) {
+                return true;
+            }
+
+            return tf_time >= (last_scan_time_ - rclcpp::Duration::from_seconds(0.5));
+        } catch (const tf2::TransformException&) {
+            return false;
+        }
     }
 
     bool is_new_rack(const Eigen::Vector3d& pos, const std::vector<Rack>& known) {
@@ -866,6 +886,7 @@ private:
     std::vector<double> gripper_closed_;
     double tray_slot_base_height_;
     double tray_slot_offset_;
+    rclcpp::Time last_scan_time_{0, 0, RCL_ROS_TIME};
 };
 
 int main(int argc, char** argv) {
@@ -889,8 +910,9 @@ int main(int argc, char** argv) {
 
 
     if (!refined.empty()) {
-        node->face_rack_slot(refined[0], 8, true);
-        node->place_on_box(node->BOX_POSE);
+        node->face_rack_slot(refined[0], 7, true);
+        //node->place_on_box(node->BOX_POSE);
+        node->face_rack_slot(refined[0], 8, false, true);
         // node->face_rack_slot(refined[1], 5);
         // node->face_rack_slot(refined[0], 4);
         // node->face_rack_slot(refined[1], 5);

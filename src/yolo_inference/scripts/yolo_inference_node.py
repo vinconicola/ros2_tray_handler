@@ -16,6 +16,7 @@ import cv2
 from scipy import ndimage
 import scipy.signal
 from rclpy.time import Time
+from visualization_msgs.msg import Marker, MarkerArray
 
 SIM = False
 
@@ -36,7 +37,8 @@ else:
 # Filtering parameters
 MIN_CLUSTER_POINTS = 100    # ignore tiny detections
 MAX_DEPTH          = 3.0    # ignore points further than 3m
-MIN_DEPTH          = 0.3    # ignore points closer than 0.3m
+MIN_DEPTH          = 0.1    # ignore points closer than 0.1m
+DETECTION_TTL      = 5.0    # seconds; matches marker lifetime in RViz
 
 
 class YoloInferenceNode(Node):
@@ -61,6 +63,8 @@ class YoloInferenceNode(Node):
 
         self.labeled_pub = self.create_publisher(PointCloud2, '/labeled_points', 10)
         self.vis_pub     = self.create_publisher(Image, '/yolo/visualization', 10)
+        self.obb_pub = self.create_publisher(MarkerArray, '/yolo/obb_markers', 10)
+
         
         self.tf_buffer   = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -71,21 +75,83 @@ class YoloInferenceNode(Node):
         
         self.get_logger().info('YOLO Node ready in SNAPSHOT mode. Call "ros2 service call /yolo_inference/trigger_detection std_srvs/srv/Trigger "{}"" to scan.')
     
-    def expire_tf(self, frame_name, parent_frame):
-        t = TransformStamped()
-        t.header.stamp = rclpy.time.Time(seconds=0).to_msg()  # epoch = ancient
-        t.header.frame_id = parent_frame
-        t.child_frame_id = frame_name
-        t.transform.rotation.w = 1.0
-        self.tf_broadcaster.sendTransform(t)
+    def clear_detection_markers(self):
+        marker_array = MarkerArray()
+        marker = Marker()
+        marker.header.frame_id = self.world_frame
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.action = Marker.DELETEALL
+        marker_array.markers.append(marker)
+        self.obb_pub.publish(marker_array)
+
+    def make_obb_marker(self, obb_center, eigenvectors, half_extents, 
+                    marker_id, frame_id, stamp, cls_id):
+        m = Marker()
+        m.header.frame_id = frame_id
+        m.header.stamp    = stamp
+        m.ns              = CLASS_NAMES.get(cls_id, 'object')
+        m.id              = marker_id
+        m.type            = Marker.CUBE
+        m.action          = Marker.ADD
+        m.lifetime        = rclpy.duration.Duration(seconds=DETECTION_TTL).to_msg()
+
+        m.pose.position.x = float(obb_center[0])
+        m.pose.position.y = float(obb_center[1])
+        m.pose.position.z = float(obb_center[2])
+
+        # Convert eigenvectors rotation matrix → quaternion
+        R = eigenvectors.copy()
+        if np.linalg.det(R) < 0:
+            R[:, 2] *= -1
+
+        trace = R[0,0] + R[1,1] + R[2,2]
+        if trace > 0:
+            s = 0.5 / np.sqrt(trace + 1.0)
+            w = 0.25 / s
+            x = (R[2,1] - R[1,2]) * s
+            y = (R[0,2] - R[2,0]) * s
+            z = (R[1,0] - R[0,1]) * s
+        elif R[0,0] > R[1,1] and R[0,0] > R[2,2]:
+            s = 2.0 * np.sqrt(1.0 + R[0,0] - R[1,1] - R[2,2])
+            w = (R[2,1] - R[1,2]) / s
+            x =  0.25 * s
+            y = (R[0,1] + R[1,0]) / s
+            z = (R[0,2] + R[2,0]) / s
+        elif R[1,1] > R[2,2]:
+            s = 2.0 * np.sqrt(1.0 + R[1,1] - R[0,0] - R[2,2])
+            w = (R[0,2] - R[2,0]) / s
+            x = (R[0,1] + R[1,0]) / s
+            y =  0.25 * s
+            z = (R[1,2] + R[2,1]) / s
+        else:
+            s = 2.0 * np.sqrt(1.0 + R[2,2] - R[0,0] - R[1,1])
+            w = (R[1,0] - R[0,1]) / s
+            x = (R[0,2] + R[2,0]) / s
+            y = (R[1,2] + R[2,1]) / s
+            z =  0.25 * s
+
+        m.pose.orientation.x = float(x)
+        m.pose.orientation.y = float(y)
+        m.pose.orientation.z = float(z)
+        m.pose.orientation.w = float(w)
+
+        # Full box size = 2 * half_extents
+        m.scale.x = float(half_extents[0] * 2)
+        m.scale.y = float(half_extents[1] * 2)
+        m.scale.z = float(half_extents[2] * 2)
+
+        # Class color with transparency
+        color = CLASS_COLORS.get(cls_id, (255, 255, 255))
+        m.color.r = color[2] / 255.0  # CLASS_COLORS is BGR
+        m.color.g = color[1] / 255.0
+        m.color.b = color[0] / 255.0
+        m.color.a = 0.35
+
+        return m   
 
     def handle_trigger(self, request, response):
         """Service callback to enable detection for the next available frame."""
-        for i in range(self.last_tray_count):
-            self.expire_tf(f'tray_{i}', self.world_frame)
-        for i in range(self.last_rack_count):
-            self.expire_tf(f'rack_{i}', self.world_frame)
-        
+        self.clear_detection_markers()
         self.detect_requested = True
         response.success = True
         response.message = "YOLO scan scheduled for next frame."
@@ -170,9 +236,10 @@ class YoloInferenceNode(Node):
         inliers = np.all(np.abs(points - mean) < std_threshold * std, axis=1)
         return points[inliers]
     
-    def get_surface_with_normal(self, points, label='object'):
+    def get_surface_with_normal(self, points, label='tray'):
         """
         Find front vertical face center and inward normal for each stacked tray layer.
+        Uses a full 3D OBB (PCA on all 3 axes) per layer to extract geometry.
         Returns a list of (centroid_3d, normal_3d) tuples, one per detected tray layer.
         """
         if len(points) < 50:
@@ -196,12 +263,11 @@ class YoloInferenceNode(Node):
         if len(peak_indices) == 0:
             return []
 
-        # ── Step 2: Per-layer processing ──────────────────────────────────────────
         results = []
 
         for idx, peak_idx in enumerate(peak_indices):
 
-            # Layer Z bounds = valleys between this peak and its neighbors
+            # ── Step 2: Extract layer using valley boundaries ──────────────────────
             z_lo = z_edges[0] if idx == 0 else \
                 z_centers[peak_indices[idx - 1]:peak_idx + 1][
                     np.argmin(z_hist[peak_indices[idx - 1]:peak_idx + 1])
@@ -214,63 +280,83 @@ class YoloInferenceNode(Node):
             layer = points[(points[:, 2] >= z_lo) & (points[:, 2] <= z_hi)]
             if len(layer) < 20:
                 continue
-            
-            z_lo_layer = np.percentile(layer[:, 2],10)
+
+            # Trim top/bottom 10% in Z to remove fringe points
+            z_lo_layer = np.percentile(layer[:, 2], 10)
             z_hi_layer = np.percentile(layer[:, 2], 90)
             layer = layer[(layer[:, 2] >= z_lo_layer) & (layer[:, 2] <= z_hi_layer)]
+            if len(layer) < 20:
+                continue
 
-            # ── Step 3: PCA on layer XY to find width and depth vectors ──────────
-            pts_2d      = layer[:, :2]
-            centroid_2d = pts_2d.mean(axis=0)
-            centered    = pts_2d - centroid_2d
-            cov         = np.cov(centered.T)
-            vals, vecs  = np.linalg.eigh(cov)
+            # ── Step 3: Full 3D OBB via PCA ───────────────────────────────────────
+            centroid_3d = layer.mean(axis=0)
+            centered    = layer - centroid_3d
 
-            vec0 = vecs[:, 0]  # smallest variance
-            vec1 = vecs[:, 1]  # largest variance
+            cov              = np.cov(centered.T)                  # (3,3)
+            eigenvalues, eigenvectors = np.linalg.eigh(cov)        # ascending order
 
-            rack_dir = -centroid_2d / (np.linalg.norm(centroid_2d) + 1e-6)
+            # Sort descending: axis0=most variance, axis2=least variance
+            order        = np.argsort(eigenvalues)[::-1]
+            eigenvectors = eigenvectors[:, order]                  # columns = OBB axes
+            eigenvalues  = eigenvalues[order]
 
-            if abs(np.dot(vec0, rack_dir)) >= abs(np.dot(vec1, rack_dir)):
-                depth_vec = vec0
-                width_vec = vec1
-            else:
-                depth_vec = vec1
-                width_vec = vec0
+            # Ensure right-handed system
+            if np.linalg.det(eigenvectors) < 0:
+                eigenvectors[:, 2] *= -1
 
-            if np.dot(depth_vec, rack_dir) < 0:
+            projected    = centered @ eigenvectors                 # (N, 3)
+
+            # ── Step 4: Identify the depth axis (points toward robot) ─────────────
+            # "rack_dir" = unit vector from object centroid toward origin (robot ~= origin)
+            rack_dir_2d = -centroid_3d[:2] / (np.linalg.norm(centroid_3d[:2]) + 1e-6)
+
+            # Among the 3 OBB axes, the depth axis is the one most aligned with rack_dir
+            # We check only XY component of each eigenvector
+            dots = np.array([
+                abs(np.dot(eigenvectors[:2, i], rack_dir_2d))
+                for i in range(3)
+            ])
+            depth_axis_idx = int(np.argmax(dots))
+
+            depth_vec = eigenvectors[:, depth_axis_idx].copy()
+
+            # Make depth_vec point toward robot
+            if np.dot(depth_vec[:2], rack_dir_2d) < 0:
                 depth_vec = -depth_vec
 
-            # ── Step 4: Keep only the nearest 40% in depth projection ────────────
-            depth_proj_all  = layer[:, :2] @ depth_vec
-            dp_min          = depth_proj_all.min()
-            dp_max          = depth_proj_all.max()
-            cluster         = layer[depth_proj_all >= dp_min + (dp_max - dp_min) * 0.6]
-            if len(cluster) < 20:
-                continue
+            # ── Step 5: Front-face centroid ────────────────────────────────────────
+            proj_min = np.percentile(projected, 5,  axis=0)
+            proj_max = np.percentile(projected, 95, axis=0)
 
-            # ── Step 5: Isolate front face — top 20% in depth projection ─────────
-            depth_proj      = cluster[:, :2] @ depth_vec
-            front_threshold = np.percentile(depth_proj, 80)
-            front_points    = cluster[depth_proj >= front_threshold]
-            if len(front_points) < 5:
-                continue
+            # Mask points inside the 90% range on ALL axes simultaneously
+            inlier_mask = np.all(
+                (projected >= proj_min) & (projected <= proj_max),
+                axis=1
+            )
+            projected_trimmed = projected[inlier_mask]
 
-            # ── Step 6: Centroid — geometric center along width, z from peak ──────
-            width_proj   = front_points[:, :2] @ width_vec
-            min_width = np.percentile(width_proj, 5)
-            max_width = np.percentile(width_proj, 95)
-            center_width = (min_width + max_width) / 2.0
-            center_depth = depth_proj[depth_proj >= front_threshold].mean()
+            if len(projected_trimmed) < 5:
+                projected_trimmed = projected  # fallback: use all points
 
-            center_xy = center_width * width_vec + center_depth * depth_vec
-            z_center  = front_points[:, 2].min()
-            centroid  = np.array([center_xy[0], center_xy[1], z_center])
+            obb_center = centroid_3d + eigenvectors @ (
+                (projected_trimmed.max(axis=0) + projected_trimmed.min(axis=0)) / 2.0
+            )
 
-            # ── Step 7: Normal = depth_vec (already points toward robot) ─────────
+            half_extents = (projected_trimmed.max(axis=0) - projected_trimmed.min(axis=0)) / 2.0
+
+            face_centroid = obb_center + depth_vec * half_extents[depth_axis_idx]
+
+            # ── Step 6: Normal ─────────────────────────────────────────────────────
             normal = np.array([depth_vec[0], depth_vec[1], 0.0])
+            normal /= np.linalg.norm(normal) + 1e-6
 
-            results.append((centroid, normal))
+            results.append((face_centroid, normal, eigenvectors, half_extents, obb_center))
+
+            self.get_logger().debug(
+                f'[{label} layer {idx}] '
+                f'half_extents=({half_extents[0]:.3f}, {half_extents[1]:.3f}, {half_extents[2]:.3f})  '
+                f'depth_axis={depth_axis_idx}  centroid={face_centroid.round(3)}'
+            )
 
         return results
 
@@ -546,6 +632,7 @@ class YoloInferenceNode(Node):
         self.detect_requested = False
         
         self.get_logger().info('Processing snapshot...')
+        detection_stamp = self.get_clock().now().to_msg()
 
         rgb = self.bridge.imgmsg_to_cv2(rgb_msg, 'bgr8')
         img_h, img_w = rgb.shape[:2]
@@ -628,6 +715,8 @@ class YoloInferenceNode(Node):
         # ── Trays ──
         tray_count = 0
         all_found_centroids = []
+        marker_array = MarkerArray()
+        marker_id    = 0
 
         if tray_masks:
             # Merge all tray masks and collect all points at once
@@ -637,15 +726,27 @@ class YoloInferenceNode(Node):
             if len(pts_all_trays) >= MIN_CLUSTER_POINTS:
                 detections = self.get_surface_with_normal(pts_all_trays, 'tray')
 
-                for centroid, normal in detections:
+                for centroid, normal, eigenvectors, half_extents, obb_center in detections:
                     frame_id = f'tray_{tray_count}'
                     self.publish_tf_with_normal(
                         centroid, normal, frame_id,
-                        self.world_frame,
-                        depth_msg.header.stamp
+                        self.world_frame, detection_stamp
                     )
                     all_found_centroids.append(centroid)
+                    
+
+                    marker_array.markers.append(
+                        self.make_obb_marker(
+                            obb_center,
+                            eigenvectors, half_extents,
+                            marker_id, self.world_frame,
+                            detection_stamp, cls_id=0
+                        )
+                    )
+                    marker_id  += 1
                     tray_count += 1
+
+        self.obb_pub.publish(marker_array)
 
         # ── Racks ──
         rack_count = 0
@@ -692,7 +793,7 @@ class YoloInferenceNode(Node):
                         frame = f'rack_{rack_count}'
                         self.publish_tf_with_normal(centroid, normal, frame,
                                                     self.world_frame,
-                                                    depth_msg.header.stamp)
+                                                    detection_stamp)
                         found_rack_positions.append(centroid)
                         rack_count += 1
                                         
