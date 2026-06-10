@@ -9,6 +9,9 @@
 #include <moveit/trajectory_processing/iterative_time_parameterization.h>
 #include <moveit/robot_trajectory/robot_trajectory.h>
 #include <std_srvs/srv/trigger.hpp>
+#include <jaka_msgs/srv/set_io.hpp>
+#include <jaka_msgs/srv/set_payload.hpp>
+#include <jaka_msgs/srv/set_collision.hpp> // <-- Changed from set_collision_level.hpp
 
 using namespace std::chrono_literals;
 
@@ -28,9 +31,9 @@ public:
         tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-        base_config_ = {0.0, 2.513, -2.471, -0.541, -1.5708, 0.8754};
-        //approach_config_ = {0.0, 0.716, -2.496, 1.780, -1.5708, 0.8754};
-        approach_config_ = {0.0, 1.937, -2.758, 0.820, -1.5708, 0.8754};
+        base_config_ = {1.57080, 2.513, -2.471, -0.541, -1.5708, 0.7854};
+        //approach_config_ = {0.0, 0.716, -2.496, 1.780, -1.5708, 0.7854};
+        approach_config_ = {1.5708, 1.937, -2.758, 0.820, -1.5708, 0.7854};
         gripper_closed_ = {0.015};
         gripper_open_ = {0.065};
         tray_slot_base_height_ = 0.15;
@@ -39,21 +42,28 @@ public:
     }
     const geometry_msgs::msg::Pose BOX_POSE = []() {
         geometry_msgs::msg::Pose p;
-        p.position.x    = -1.125;
-        p.position.y    =  0.24;
-        p.position.z    =  0.45;
+        p.position.x    =  -0.08;
+        p.position.y    =  1.15;
+        p.position.z    =  0.73;
         p.orientation.x =  0.0;
         p.orientation.y =  0.0;
-        p.orientation.z =  0.0;
-        p.orientation.w =  1.0;
+        p.orientation.z =  -0.7071068; //normal along -y
+        p.orientation.w =  0.7071068;
         return p;
     }();
 
     void init() {
         arm_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(shared_from_this(), "jaka_s12");
-        gripper_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(shared_from_this(), "gripper");
-        arm_->setMaxVelocityScalingFactor(0.8);
-        arm_->setMaxAccelerationScalingFactor(0.6);
+        if (use_real_gripper_) {
+            io_client_ = this->create_client<jaka_msgs::srv::SetIO>("/jaka_driver/set_io");
+            payload_client_ = this->create_client<jaka_msgs::srv::SetPayload>("/jaka_driver/set_payload");
+            collision_client_ = this->create_client<jaka_msgs::srv::SetCollision>("/jaka_driver/set_collision_level");
+        } else {
+            gripper_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(
+                shared_from_this(), "gripper");
+        }
+        arm_->setMaxVelocityScalingFactor(0.1);
+        arm_->setMaxAccelerationScalingFactor(0.1);
 
         this->declare_parameter("robot_description_planning.cartesian_limits.max_trans_vel", 1.0);
         this->declare_parameter("robot_description_planning.cartesian_limits.max_trans_acc", 2.25);
@@ -62,11 +72,11 @@ public:
 
         trigger_client_ = this->create_client<std_srvs::srv::Trigger>("/yolo_inference/trigger_detection");
 
-        joint_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
-            "/joint_states", 10, 
-            [this](const sensor_msgs::msg::JointState::SharedPtr msg) {
-                last_joint_state_ = *msg;
-            });
+        // joint_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
+        //     "/joint_states", 10, 
+        //     [this](const sensor_msgs::msg::JointState::SharedPtr msg) {
+        //         last_joint_state_ = *msg;
+        //     });
     }
 
     // --- helpers ---
@@ -99,6 +109,66 @@ public:
         RCLCPP_INFO(this->get_logger(), "YOLO scan wait complete");
     }
 
+    void set_gripper(bool close) {
+        if (use_real_gripper_) {
+            auto req = std::make_shared<jaka_msgs::srv::SetIO::Request>();
+            req->signal = "digital";   // check exact string with your driver docs
+            req->type   = 0;      // 0 = digital
+            req->index  = 7;      // DO8
+            req->value  = close ? 1.0f : 0.0f;
+
+            auto future = io_client_->async_send_request(req);
+
+            auto timeout = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            while (future.wait_for(std::chrono::milliseconds(10)) != std::future_status::ready) {
+                if (std::chrono::steady_clock::now() > timeout) {
+                    RCLCPP_ERROR(this->get_logger(), "set_gripper: service call timed out");
+                    return;
+                }
+            }
+            rclcpp::sleep_for(500ms);
+        } else {
+            gripper_->setJointValueTarget(close ? gripper_closed_ : gripper_open_);
+            gripper_->move();
+        }
+    }
+
+    void set_robot_payload(float weight, double x = 0, double y = 0, double z = 0) {
+        if (!use_real_gripper_) return;
+    
+        auto req = std::make_shared<jaka_msgs::srv::SetPayload::Request>();
+        req->mass = weight; // <-- Changed from .weight to .mass
+        req->xc = x;
+        req->yc = y;
+        req->zc = z;
+
+        auto future = payload_client_->async_send_request(req);
+        auto timeout = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (future.wait_for(10ms) != std::future_status::ready) {
+            if (std::chrono::steady_clock::now() > timeout) {
+                RCLCPP_ERROR(this->get_logger(), "set_payload timed out!");
+                return;
+            }
+        }
+        rclcpp::sleep_for(100ms); // Small delay for controller to update torque models
+    }
+
+    void set_collision_level(int level) {
+        if (!use_real_gripper_) return;
+        
+        auto req = std::make_shared<jaka_msgs::srv::SetCollision::Request>();
+        req->value = level; // 0 (off) to 5 (most sensitive)
+
+        auto future = collision_client_->async_send_request(req);
+        auto timeout = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (future.wait_for(10ms) != std::future_status::ready) {
+            if (std::chrono::steady_clock::now() > timeout) {
+                RCLCPP_ERROR(this->get_logger(), "set_collision_level timed out!");
+                return;
+            }
+        }
+    }
+
     // --- 1. SCANNING ---
     std::vector<Rack> find_racks() {
         RCLCPP_INFO(this->get_logger(), "Starting rack scan...");
@@ -112,7 +182,7 @@ public:
         std::vector<double> current_state = base_config_;
         double step = 1.04; //1.04      
 
-        for (double angle = 0.0; angle < 3.14 - step; angle += step) {
+        for (double angle = 0.9; angle < 2.1 - step; angle += step) {
             current_state[0] = angle + base_config_[0];
             RCLCPP_INFO(this->get_logger(),
                 "Scan iteration angle=%.3f target_joint_1=%.3f",
@@ -221,7 +291,7 @@ public:
         for (const auto& rack : rough_racks) {
             double angle = std::atan2(rack.position.y(), rack.position.x());
             std::vector<double> face_state = base_config_;
-            face_state[0] = angle + base_config_[0];
+            face_state[0] = angle;
 
             RCLCPP_INFO(this->get_logger(),
                 "Refining rack %s with face angle %.3f",
@@ -322,7 +392,7 @@ public:
     bool face_rack_slot(const Rack& rack, int slot_index, bool pick=false, bool place=false) {
         double angle = std::atan2(rack.position.y(), rack.position.x());
         std::vector<double> approach_state = approach_config_;
-        approach_state[0] = angle + approach_config_[0];
+        approach_state[0] = angle;
 
         arm_->setJointValueTarget(approach_state);
         arm_->move();
@@ -413,8 +483,7 @@ public:
 
         if (pick) {
             request_yolo_scan();
-            gripper_->setJointValueTarget(gripper_open_);
-            gripper_->move();
+            set_gripper(false);
             for (int t = 0; t < 20; ++t) {
                 std::string tray_frame = "tray_" + std::to_string(t);
                 if (!frame_exists(tray_frame)) break;
@@ -446,14 +515,23 @@ public:
                     tray_rot.col(1) = y_axis;
                     tray_rot.col(2) = z_axis;
                     Eigen::Quaterniond tray_quat(tray_rot);
-
-                    // Update target position and orientation
-                    target.position.x  = tray_pos.x() - tray_normal.x() * 0.001;
-                    target.position.y  = tray_pos.y() - tray_normal.y() * 0.001;
-                    target.position.z  = tray_pos.z() - 0.005;
-                    target.orientation = tf2::toMsg(tray_quat);
-                
-                    approach.orientation = tf2::toMsg(tray_quat);
+                    
+                    if(abs(target.position.x-tray_pos.x()) + abs(target.position.y - tray_pos.y() < 0.08)){
+                        // Update target position and orientation
+                        target.position.x = tray_pos.x()- tray_normal.x() * 0.015;
+                        target.position.y = tray_pos.y() - tray_normal.y() * 0.015;
+                        target.position.z = tray_pos.z() - 0.01;
+                        target.orientation = tf2::toMsg(tray_quat);
+                        approach.orientation = tf2::toMsg(tray_quat);
+                    } else{
+                        RCLCPP_INFO(this->get_logger(), "tray TF not close enough to the center of the rack");
+                        target.position.x -= rack_normal.x() * 0.05;
+                        target.position.y -= rack_normal.y() * 0.05;
+                        target.position.z -= 0.01;
+                    }
+                    
+                    
+                    
 
                     break;
 
@@ -470,15 +548,22 @@ public:
         arm_->setMaxVelocityScalingFactor(0.2);
         arm_->setMaxAccelerationScalingFactor(0.15);
 
-        moveit::core::RobotStatePtr pre_insert_state = arm_->getCurrentState(5.0);
-        if (!pre_insert_state) {
-            RCLCPP_ERROR(this->get_logger(), "Failed to get state before insertion");
-            return false;
-        }
-        arm_->setStartState(*pre_insert_state);
+        // moveit::core::RobotStatePtr pre_insert_state = arm_->getCurrentState(5.0);
+        // if (!pre_insert_state) {
+        //     RCLCPP_ERROR(this->get_logger(), "Failed to get state before insertion");
+        //     return false;
+        // }
+        //arm_->setStartState(*pre_insert_state);
+        
+        //debug
+        // geometry_msgs::msg::Pose test;
+        // test.orientation = tf2::toMsg(target_quat);
+        
+        // Eigen::Vector3d approach_pos_w = slot_pos_w + (rack_normal * 0.30);
+        // approach.position = tf2::toMsg(approach_pos_w);
 
         // Finer step + jump threshold to reject IK branch switches
-        std::vector<geometry_msgs::msg::Pose> waypoints = { approach, target };
+        std::vector<geometry_msgs::msg::Pose> waypoints = { approach, target }; //target
         moveit_msgs::msg::RobotTrajectory trajectory;
         double fraction = arm_->computeCartesianPath(
             waypoints,
@@ -487,10 +572,13 @@ public:
             trajectory,
             false
         );
+        // usePILZ("PTP");
+        // arm_->setPoseTarget(test);
+        // arm_->move();
 
         RCLCPP_INFO(this->get_logger(), "Cartesian path: %.1f%%", fraction * 100.0);
 
-        if (fraction < 0.90) {
+        if (fraction < 0.98) {
             RCLCPP_ERROR(this->get_logger(), "Cartesian path only %.1f%% complete", fraction * 100.0);
             return false;
         }
@@ -511,10 +599,18 @@ public:
 
         rclcpp::sleep_for(2s);
 
+        
+
+
         if (pick) {
+
+            //Drop sensitivity to prevent a trip from gripper snapping or initial heavy load
+            RCLCPP_INFO(this->get_logger(), "Lowering collision sensitivity for picking state.");
+            set_collision_level(0);
+
             geometry_msgs::msg::PoseStamped current_pose = arm_->getCurrentPose();
             geometry_msgs::msg::Pose lift_pose = current_pose.pose;
-            lift_pose.position.z += 0.01;
+            lift_pose.position.z += 0.02;
 
             usePILZ("PTP");
             arm_->setMaxVelocityScalingFactor(0.1);
@@ -522,14 +618,21 @@ public:
             arm_->setPoseTarget(lift_pose);
             arm_->move();
 
-            gripper_->setJointValueTarget(gripper_closed_);
-            gripper_->move();
+            set_gripper(true);
+
+            //Update payload to loaded mass
+            RCLCPP_INFO(this->get_logger(), "Updating JAKA payload to LOADED state.");
+            set_robot_payload(4, 0.0, 0.0, 243.0);
 
             current_pose = arm_->getCurrentPose();
             geometry_msgs::msg::Pose lift_pose2 = current_pose.pose;
             lift_pose2.position.z += 0.02;
             arm_->setPoseTarget(lift_pose2);
             arm_->move();
+            
+            //restore collision protection
+            RCLCPP_INFO(this->get_logger(), "Restoring normal collision sensitivity.");
+            set_collision_level(3);
 
         } else if (place) {
             geometry_msgs::msg::PoseStamped current_pose = arm_->getCurrentPose();
@@ -542,8 +645,7 @@ public:
             arm_->setPoseTarget(drop_pose);
             arm_->move();
 
-            gripper_->setJointValueTarget(gripper_open_);
-            gripper_->move();
+            set_gripper(false);
 
             current_pose = arm_->getCurrentPose();
             geometry_msgs::msg::Pose retreat_pose = current_pose.pose;
@@ -553,12 +655,12 @@ public:
         }
 
         // --- Phase 3: Cartesian retraction seeded from post-insertion state ---
-        pre_insert_state = arm_->getCurrentState(5.0);
-        if (!pre_insert_state) {
-            RCLCPP_ERROR(this->get_logger(), "Failed to get state before retraction");
-            return false;
-        }
-        arm_->setStartState(*pre_insert_state);
+        // pre_insert_state = arm_->getCurrentState(5.0);
+        // if (!pre_insert_state) {
+        //     RCLCPP_ERROR(this->get_logger(), "Failed to get state before retraction");
+        //     return false;
+        // }
+        // arm_->setStartState(*pre_insert_state);
 
         // Target = current pose after pick/place
         geometry_msgs::msg::PoseStamped current_stamped = arm_->getCurrentPose();
@@ -615,7 +717,7 @@ public:
         // ── Step 1: Rotate joint 0 to face the box ────────────────────────────────
         double angle = std::atan2(box_pose.position.y, box_pose.position.x);
         std::vector<double> face_state = approach_config_;
-        face_state[0] = angle + approach_config_[0];
+        face_state[0] = angle;
 
         usePILZ("PTP");
         arm_->setMaxVelocityScalingFactor(0.4);
@@ -649,12 +751,16 @@ public:
 
         // ── Step 3: Target pose — 15cm along normal from box surface ──────────────
         geometry_msgs::msg::Pose target;
-        target.position.x  = box_pose.position.x + box_normal.x() * 0.10;
-        target.position.y  = box_pose.position.y + box_normal.y() * 0.10;
-        target.position.z  = box_pose.position.z;
+        target.position.x  = box_pose.position.x + box_normal.x() * 0.15;
+        target.position.y  = box_pose.position.y + box_normal.y() * 0.15;
+        target.position.z  = box_pose.position.z + 0.02;
         target.orientation = tf2::toMsg(target_quat);
 
         // ── Step 4: PTP move to target ────────────────────────────────────────────
+        RCLCPP_INFO(this->get_logger(),
+                "Trying PILZ PTP approach : [%.3f, %.3f, %.3f]",
+                target.position.x, target.position.y, target.position.z);
+
         usePILZ("PTP");
         arm_->setMaxVelocityScalingFactor(0.3);
         arm_->setMaxAccelerationScalingFactor(0.2);
@@ -664,11 +770,26 @@ public:
             return false;
         }
 
-        rclcpp::sleep_for(1s);
+        set_collision_level(0);
+        target.position.z = box_pose.position.z;
+
+        arm_->setMaxVelocityScalingFactor(0.1);
+        arm_->setMaxAccelerationScalingFactor(0.1);
+        arm_->setPoseTarget(target);
+        if (arm_->move() != moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_ERROR(this->get_logger(), "Failed lower on box");
+            return false;
+        }
+
+        
 
         // ── Step 5: Release tray — lower Z, open gripper, small retreat ───────────
-        gripper_->setJointValueTarget(gripper_open_);
-        gripper_->move();
+
+        set_gripper(false);
+
+        // Update payload BACK to empty gripper weight 
+        RCLCPP_INFO(this->get_logger(), "Updating JAKA payload back to EMPTY state.");
+        set_robot_payload(1.77, 0.0, 0.0, 65.0);
 
         geometry_msgs::msg::PoseStamped current_stamped = arm_->getCurrentPose();
         geometry_msgs::msg::Pose drop_pose = current_stamped.pose;
@@ -679,7 +800,7 @@ public:
         arm_->setPoseTarget(drop_pose);
         arm_->move();
 
-        
+        set_collision_level(1);
 
         // ── Step 6: Retreat 30cm along normal (+X) ────────────────────────────────
         current_stamped = arm_->getCurrentPose();
@@ -691,6 +812,9 @@ public:
         arm_->setMaxAccelerationScalingFactor(0.2);
         arm_->setPoseTarget(retreat_pose);
         arm_->move();
+
+        // Restore safety levels for fast travel back to homing positions
+        set_collision_level(3);
 
         // ── Step 7: Return to approach config keeping joint 0 facing box ──────────
         std::vector<double> return_state = approach_config_;
@@ -704,8 +828,7 @@ public:
             RCLCPP_ERROR(this->get_logger(), "Failed to return to approach config");
             return false;
         }
-        gripper_->setJointValueTarget(gripper_closed_);
-        gripper_->move();
+        set_gripper(true);
 
         return true;
     }
@@ -722,15 +845,20 @@ private:
         }
         return true;
     }
+    bool use_real_gripper_ = true; // set false for simulation
 
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
     std::shared_ptr<moveit::planning_interface::MoveGroupInterface> arm_;
     std::shared_ptr<moveit::planning_interface::MoveGroupInterface> gripper_;
     rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr trigger_client_;
+    rclcpp::Client<jaka_msgs::srv::SetIO>::SharedPtr io_client_;
+    rclcpp::Client<jaka_msgs::srv::SetPayload>::SharedPtr payload_client_;
+    rclcpp::Client<jaka_msgs::srv::SetCollision>::SharedPtr collision_client_;
+
 
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_sub_;
-    sensor_msgs::msg::JointState last_joint_state_;
+    //sensor_msgs::msg::JointState last_joint_state_;
 
     std::vector<double> base_config_;
     std::vector<double> approach_config_;
@@ -749,21 +877,27 @@ int main(int argc, char** argv) {
     std::thread([&executor]() { executor.spin(); }).detach();
 
     node->init();
+    node->set_collision_level(3);
+    node->set_robot_payload(1.77, 0.0, 0.0, 65.0);
+    // node->set_gripper(true);
+    // node->set_gripper(false);
+
+    //node->place_on_box(node->BOX_POSE);
     
     auto rough = node->find_racks();
     auto refined = node->refine_racks(rough);
 
 
     if (!refined.empty()) {
-        node->face_rack_slot(refined[0], 3, true);
+        node->face_rack_slot(refined[0], 8, true);
         node->place_on_box(node->BOX_POSE);
-        node->face_rack_slot(refined[1], 5);
-        node->face_rack_slot(refined[0], 4);
-        node->face_rack_slot(refined[1], 5);
-        node->face_rack_slot(refined[0], 2);
-        node->face_rack_slot(refined[1], 5);
-        node->face_rack_slot(refined[0], 7);
-        node->face_rack_slot(refined[1], 5);
+        // node->face_rack_slot(refined[1], 5);
+        // node->face_rack_slot(refined[0], 4);
+        // node->face_rack_slot(refined[1], 5);
+        // node->face_rack_slot(refined[0], 2);
+        // node->face_rack_slot(refined[1], 5);
+        // node->face_rack_slot(refined[0], 7);
+        // node->face_rack_slot(refined[1], 5);
         // node->face_rack_slot(refined[0], 0);
         // node->face_rack_slot(refined[0], 1);
         // node->face_rack_slot(refined[0], 2);

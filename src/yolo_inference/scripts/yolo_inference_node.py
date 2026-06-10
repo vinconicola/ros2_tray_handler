@@ -17,6 +17,7 @@ from scipy import ndimage
 import scipy.signal
 from rclpy.time import Time
 
+SIM = False
 
 IMG_W = 640
 IMG_H = 480
@@ -27,7 +28,10 @@ CLASS_COLORS = {
     1: (180, 100, 255),  # rack  → purple
 }
 
-MODEL_PATH = '/home/nicola/ros2_ws/src/yolo_inference/weights/best_sim.pt'
+if (not SIM):
+    MODEL_PATH = '/home/nicola/ros2_ws/src/yolo_inference/weights/best.pt'
+else:
+    MODEL_PATH = '/home/nicola/ros2_ws/src/yolo_inference/weights/best_sim.pt'
 
 # Filtering parameters
 MIN_CLUSTER_POINTS = 100    # ignore tiny detections
@@ -61,13 +65,28 @@ class YoloInferenceNode(Node):
         self.tf_buffer   = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.world_frame = 'world'
+
+        self.last_tray_count = 0
+        self.last_rack_count = 0
         
         self.get_logger().info('YOLO Node ready in SNAPSHOT mode. Call "ros2 service call /yolo_inference/trigger_detection std_srvs/srv/Trigger "{}"" to scan.')
+    
+    def expire_tf(self, frame_name, parent_frame):
+        t = TransformStamped()
+        t.header.stamp = rclpy.time.Time(seconds=0).to_msg()  # epoch = ancient
+        t.header.frame_id = parent_frame
+        t.child_frame_id = frame_name
+        t.transform.rotation.w = 1.0
+        self.tf_broadcaster.sendTransform(t)
 
     def handle_trigger(self, request, response):
         """Service callback to enable detection for the next available frame."""
+        for i in range(self.last_tray_count):
+            self.expire_tf(f'tray_{i}', self.world_frame)
+        for i in range(self.last_rack_count):
+            self.expire_tf(f'rack_{i}', self.world_frame)
+        
         self.detect_requested = True
-        self.get_logger().info('Detection triggered! Waiting for next sync frame...')
         response.success = True
         response.message = "YOLO scan scheduled for next frame."
         return response
@@ -195,6 +214,10 @@ class YoloInferenceNode(Node):
             layer = points[(points[:, 2] >= z_lo) & (points[:, 2] <= z_hi)]
             if len(layer) < 20:
                 continue
+            
+            z_lo_layer = np.percentile(layer[:, 2],10)
+            z_hi_layer = np.percentile(layer[:, 2], 90)
+            layer = layer[(layer[:, 2] >= z_lo_layer) & (layer[:, 2] <= z_hi_layer)]
 
             # ── Step 3: PCA on layer XY to find width and depth vectors ──────────
             pts_2d      = layer[:, :2]
@@ -235,7 +258,9 @@ class YoloInferenceNode(Node):
 
             # ── Step 6: Centroid — geometric center along width, z from peak ──────
             width_proj   = front_points[:, :2] @ width_vec
-            center_width = (width_proj.min() + width_proj.max()) / 2.0
+            min_width = np.percentile(width_proj, 5)
+            max_width = np.percentile(width_proj, 95)
+            center_width = (min_width + max_width) / 2.0
             center_depth = depth_proj[depth_proj >= front_threshold].mean()
 
             center_xy = center_width * width_vec + center_depth * depth_vec
@@ -366,7 +391,7 @@ class YoloInferenceNode(Node):
         return False
 
     def publish_tf_with_normal(self, position, normal, frame_name, parent_frame, stamp, static=False):
-        """Publish TF with orientation aligned to surface normal."""
+        """Publish TF with Z axis aligned to surface normal."""
         t = TransformStamped()
         t.header.stamp    = stamp
         t.header.frame_id = parent_frame
@@ -427,10 +452,10 @@ class YoloInferenceNode(Node):
 
             q = np.array([x, y, z, w])
 
-        t.transform.rotation.x = float(q[0])
-        t.transform.rotation.y = float(q[1])
-        t.transform.rotation.z = float(q[2])
-        t.transform.rotation.w = float(q[3])
+            t.transform.rotation.x = float(q[0])
+            t.transform.rotation.y = float(q[1])
+            t.transform.rotation.z = float(q[2])
+            t.transform.rotation.w = float(q[3])
 
         if static:
             self.static_tf_broadcaster.sendTransform(t)
@@ -484,14 +509,18 @@ class YoloInferenceNode(Node):
             depth *= 0.001
 
         # D435 640x480 — computed from actual FOV 69.4° x 42.5°
-        # fx = (640/2) / tan(69.4°/2) = 462.1
-        # fy = (480/2) / tan(42.5°/2) = 617.1
-        # sim FOV
-        fx = 462.1
-        fy = 455
+        if (not SIM):
+            fx = 605 #615
+            fy = 605 #615
 
-        cx = 320.0
-        cy = 240.0
+            cx = 309  #331 image upside down
+            cy = 231  #249
+        else:
+            fx = 462.1  #sim values
+            fy = 455
+
+            cx = 320.0
+            cy = 240.0
 
 
         u_coords, v_coords = np.meshgrid(
@@ -502,12 +531,6 @@ class YoloInferenceNode(Node):
         x_optical = (u_coords - cx) * z / fx
         y_optical = (v_coords - cy) * z / fy
 
-        # Depth images are projected in ROS optical-frame coordinates:
-        # x right, y down, z forward. The rest of this stack expects camera_link:
-        # x forward, y left, z up.
-        # x_link = z
-        # y_link = -x_optical
-        # z_link = -y_optical
 
         xyz = np.stack((x_optical, y_optical, z), axis=-1).astype(np.float32)
         valid_mask = np.isfinite(z) & (z > MIN_DEPTH) & (z < MAX_DEPTH)
@@ -606,26 +629,15 @@ class YoloInferenceNode(Node):
         tray_count = 0
         all_found_centroids = []
 
-        for mask_idx, mask in enumerate(tray_masks):
-            object_mask = mask.astype(bool) & visible_mask
-            pts_tray = arr_world_img[object_mask]
+        if tray_masks:
+            # Merge all tray masks and collect all points at once
+            merged_tray_mask = np.maximum.reduce(tray_masks).astype(bool) & visible_mask
+            pts_all_trays = arr_world_img[merged_tray_mask]
 
-            if len(pts_tray) < MIN_CLUSTER_POINTS:
-                self.get_logger().info(f'  Mask {mask_idx}: skipped — too few points')
-                continue
+            if len(pts_all_trays) >= MIN_CLUSTER_POINTS:
+                detections = self.get_surface_with_normal(pts_all_trays, 'tray')
 
-            detections = self.get_surface_with_normal(pts_tray, f'tray_{mask_idx}')
-
-            if not detections:
-                self.get_logger().info(f'  Mask {mask_idx}: skipped — no centroid')
-                continue
-
-            for centroid, normal in detections:
-                is_duplicate = any(
-                    np.linalg.norm(centroid - prev_c) < 0.05
-                    for prev_c in all_found_centroids
-                )
-                if not is_duplicate:
+                for centroid, normal in detections:
                     frame_id = f'tray_{tray_count}'
                     self.publish_tf_with_normal(
                         centroid, normal, frame_id,
@@ -699,6 +711,8 @@ class YoloInferenceNode(Node):
         vis_msg = self.bridge.cv2_to_imgmsg(vis_img, 'bgr8')
         vis_msg.header = rgb_msg.header
         self.vis_pub.publish(vis_msg)
+        self.last_tray_count = tray_count
+        self.last_rack_count = rack_count
 
     def build_labeled_cloud(self, original_msg, points_xyz, labels, frame_id=None):
         header = Header()

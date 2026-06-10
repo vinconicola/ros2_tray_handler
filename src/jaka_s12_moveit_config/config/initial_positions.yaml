@@ -1,7 +1,7 @@
 # Default initial positions for jaka_s12's ros2_control fake system
 
 initial_positions:
-  joint_1: 0.0
+  joint_1: 1.5708
   joint_2: 2.513
   joint_3: -2.471
   joint_4: -0.541

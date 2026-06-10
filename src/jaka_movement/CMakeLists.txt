@@ -16,6 +16,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(jaka_msgs REQUIRED)
 
 add_executable(tray_handler_node src/tray_handler.cpp)
 
@@ -30,6 +31,7 @@ ament_target_dependencies(tray_handler_node
   tf2_geometry_msgs
   geometry_msgs
   std_srvs
+  jaka_msgs
 )
 
 # Manual include for Eigen since it's not a pure ament package
