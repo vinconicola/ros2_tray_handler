@@ -16,7 +16,7 @@ ros2 launch jaka_planner moveit_server.launch.py ip:=192.168.0.75 model:=s12
 ros2 launch jaka_s12_moveit_config demo.launch.py      #rviz
 ros2 run yolo_inference yolo_inference_node.py
 
-ros2 run jaka_movement tray_handler_node
-ros2 run jaka_movement tray_handler_node --ros-args --remap use_sim_time:=true
+ros2 launch jaka_movement tray_handler.launch.py
+ros2 launch jaka_movement tray_handler.launch.py --ros-args --remap use_sim_time:=true
 
 ros2 service call /jaka_driver/set_io jaka_msgs/srv/SetIO "{signal: 'digital', type: 0, index: 7, value: 1.0}" #gripper

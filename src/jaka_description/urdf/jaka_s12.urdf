@@ -380,7 +380,7 @@
   <link name="camera_link">
     <visual>
       <origin 
-        xyz="-0.01 0.00 -0.01"
+        xyz="-0.01 0.02 -0.01"
         rpy="0 0 1.5708" />
       <geometry>
         <box size="0.11 0.05 0.07"/>
@@ -393,7 +393,7 @@
     </visual>
     <collision>
       <origin
-        xyz="-0.01 0.00 -0.01"
+        xyz="-0.01 0.02 -0.01"
         rpy="0 0 1.5708" />
       <geometry>
         <box size="0.11 0.05 0.07"/>
@@ -564,7 +564,7 @@
   <joint name="camera_joint" type="fixed">
     <parent link="Gripper01"/>
     <child link="camera_link"/>
-    <origin xyz="0.00 0.115 0.08" rpy="-1.5708 -1.5708 0.0"/>
+    <origin xyz="-0.02 0.115 0.08" rpy="-1.5708 -1.5708 0.0"/>
   </joint>
   
   <joint name="camera_optical_joint" type="fixed">

@@ -288,45 +288,65 @@ class YoloInferenceNode(Node):
             if len(layer) < 20:
                 continue
 
-            # ── Step 3: Full 3D OBB via PCA ───────────────────────────────────────
+            xy_dist = np.linalg.norm(layer[:, :2], axis=1)
+            dist_threshold = np.percentile(xy_dist, 98)
+            layer = layer[xy_dist <= dist_threshold]
+
+            if len(layer) < 20:
+                continue
+
+            # ── Step 3: First-pass PCA to find rough depth axis ───────────────────────
             centroid_3d = layer.mean(axis=0)
             centered    = layer - centroid_3d
+            cov         = np.cov(centered.T)
+            eigenvalues, eigenvectors = np.linalg.eigh(cov)
 
-            cov              = np.cov(centered.T)                  # (3,3)
-            eigenvalues, eigenvectors = np.linalg.eigh(cov)        # ascending order
-
-            # Sort descending: axis0=most variance, axis2=least variance
             order        = np.argsort(eigenvalues)[::-1]
-            eigenvectors = eigenvectors[:, order]                  # columns = OBB axes
-            eigenvalues  = eigenvalues[order]
+            eigenvectors = eigenvectors[:, order]
 
-            # Ensure right-handed system
+            # Rough rack_dir to identify depth axis
+            rack_dir_2d = -centroid_3d[:2] / (np.linalg.norm(centroid_3d[:2]) + 1e-6)
+            dots = np.array([abs(np.dot(eigenvectors[:2, i], rack_dir_2d)) for i in range(3)])
+            depth_axis_idx_rough = int(np.argmax(dots))
+
+            rough_depth_vec = eigenvectors[:, depth_axis_idx_rough].copy()
+            if np.dot(rough_depth_vec[:2], rack_dir_2d) < 0:
+                rough_depth_vec = -rough_depth_vec
+
+            # ── Step 4: Trim far 5% along rough depth axis, recompute PCA ─────────────
+            depth_proj     = layer @ rough_depth_vec
+            depth_threshold = np.percentile(depth_proj, 95)
+            layer_trimmed  = layer[depth_proj <= depth_threshold]
+
+            if len(layer_trimmed) < 20:
+                layer_trimmed = layer  # fallback: use original
+
+            # Second-pass PCA on trimmed layer
+            centroid_3d = layer_trimmed.mean(axis=0)
+            centered    = layer_trimmed - centroid_3d
+            cov         = np.cov(centered.T)
+            eigenvalues, eigenvectors = np.linalg.eigh(cov)
+
+            order        = np.argsort(eigenvalues)[::-1]
+            eigenvectors = eigenvectors[:, order]
+
             if np.linalg.det(eigenvectors) < 0:
                 eigenvectors[:, 2] *= -1
 
-            projected    = centered @ eigenvectors                 # (N, 3)
+            projected = centered @ eigenvectors
 
-            # ── Step 4: Identify the depth axis (points toward robot) ─────────────
-            # "rack_dir" = unit vector from object centroid toward origin (robot ~= origin)
-            rack_dir_2d = -centroid_3d[:2] / (np.linalg.norm(centroid_3d[:2]) + 1e-6)
-
-            # Among the 3 OBB axes, the depth axis is the one most aligned with rack_dir
-            # We check only XY component of each eigenvector
-            dots = np.array([
-                abs(np.dot(eigenvectors[:2, i], rack_dir_2d))
-                for i in range(3)
-            ])
+            # ── Step 5: Identify depth axis from refined PCA ──────────────────────────
+            rack_dir_2d    = -centroid_3d[:2] / (np.linalg.norm(centroid_3d[:2]) + 1e-6)
+            dots           = np.array([abs(np.dot(eigenvectors[:2, i], rack_dir_2d)) for i in range(3)])
             depth_axis_idx = int(np.argmax(dots))
 
             depth_vec = eigenvectors[:, depth_axis_idx].copy()
-
-            # Make depth_vec point toward robot
             if np.dot(depth_vec[:2], rack_dir_2d) < 0:
                 depth_vec = -depth_vec
 
             # ── Step 5: Front-face centroid ────────────────────────────────────────
-            proj_min = np.percentile(projected, 5,  axis=0)
-            proj_max = np.percentile(projected, 95, axis=0)
+            proj_min = np.percentile(projected, 3,  axis=0)
+            proj_max = np.percentile(projected, 97, axis=0)
 
             # Mask points inside the 90% range on ALL axes simultaneously
             inlier_mask = np.all(
