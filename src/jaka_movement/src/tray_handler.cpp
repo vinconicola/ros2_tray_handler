@@ -184,7 +184,7 @@ public:
         std::vector<double> current_state = base_config_;
         double step = 1.04; //1.04      
 
-        for (double angle = 0.9; angle < 2.1 - step; angle += step) {
+        for (double angle = 0.7; angle < 2.1 - step; angle += step) {
             current_state[0] = angle + base_config_[0];
             RCLCPP_INFO(this->get_logger(),
                 "Scan iteration angle=%.3f target_joint_1=%.3f",
@@ -477,7 +477,7 @@ public:
             RCLCPP_ERROR(this->get_logger(), "Failed to reach approach at any distance");
             return false;
         }
-        geometry_msgs::msg::Pose retract_approach = approach;
+
         if (pick) {
             request_yolo_scan();
             set_gripper(false);
@@ -519,14 +519,23 @@ public:
                     tray_rot.col(1) = y_axis;
                     tray_rot.col(2) = z_axis;
                     Eigen::Quaterniond tray_quat(tray_rot);
-                    
-                    if(abs(target.position.x-tray_pos.x()) + abs(target.position.y - tray_pos.y()) < 0.08){
+                    Eigen::Vector2d delta(
+                        tray_pos.x() - target.position.x,
+                        tray_pos.y() - target.position.y);
+
+                    Eigen::Vector2d normal_2d(rack_normal.x(), rack_normal.y());
+                    Eigen::Vector2d lateral_2d(-rack_normal.y(), rack_normal.x());
+
+                    double depth_dist   = std::abs(delta.dot(normal_2d));
+                    double lateral_dist = std::abs(delta.dot(lateral_2d));
+
+                    if (depth_dist < 0.08 && lateral_dist < 0.04){
                         // Update target position and orientation
                         target.position.x = tray_pos.x()- tray_normal.x() * 0.02;
                         target.position.y = tray_pos.y() - tray_normal.y() * 0.02;
                         target.position.z = tray_pos.z() - 0.03;
-                        // target.orientation = tf2::toMsg(tray_quat);
-                        // retract_approach.orientation = tf2::toMsg(tray_quat);
+                        //target.orientation = tf2::toMsg(tray_quat);
+                        //retract_approach.orientation = tf2::toMsg(tray_quat);
                     } else{
                         RCLCPP_INFO(this->get_logger(), "tray TF not close enough to the center of the rack");
                         target.position.x -= rack_normal.x() * 0.04;
@@ -542,8 +551,8 @@ public:
                 }
             }
         } else if(place){
-            target.position.x -= rack_normal.x() * 0.04;
-            target.position.y -= rack_normal.y() * 0.04;
+            target.position.x -= rack_normal.x() * 0.06;
+            target.position.y -= rack_normal.y() * 0.06;
         }
 
         // --- Phase 2: Cartesian insertion seeded from current state ---
@@ -672,30 +681,46 @@ public:
         geometry_msgs::msg::PoseStamped current_stamped = arm_->getCurrentPose();
         geometry_msgs::msg::Pose retract_target = current_stamped.pose;
 
-        // Approach = original approach but offset vertically based on operation
-        
-        if (pick) {
-            retract_approach.position.z += 0.04;  // 4cm higher for pick
-        } else if (place) {
-            retract_approach.position.z -= 0.02;  // 2cm lower for place
-        }
+        geometry_msgs::msg::Pose retract_approach;
         retract_approach.orientation = retract_target.orientation;
-        
-        waypoints = { retract_target, retract_approach };
-        fraction = arm_->computeCartesianPath(
-            waypoints,
-            0.01,
-            2.0,
-            trajectory,
-            false
-        );
 
-        RCLCPP_INFO(this->get_logger(), "Cartesian retraction path: %.1f%%", fraction * 100.0);
+        for (double dist : {0.70, 0.70, 0.65}) {
+            Eigen::Vector3d retract_pos_w = slot_pos_w + (rack_normal * dist);
+            if (pick) {
+                retract_pos_w.z() += 0.02;
+            } else if (place) {
+                retract_pos_w.z() -= 0.02;
+            }
 
-        if (fraction < 0.90) {
+            retract_approach.position = tf2::toMsg(retract_pos_w);
+
+            waypoints = { retract_target, retract_approach };
+            fraction = arm_->computeCartesianPath(waypoints, 0.01, 2.0, trajectory, false);
+
+            RCLCPP_INFO(this->get_logger(), "Cartesian retraction at %.2fm: %.1f%%", dist, fraction * 100.0);
+
+            if (fraction >= 0.98) {
+                break;
+            }
+            RCLCPP_WARN(this->get_logger(), "Cartesian retraction failed at %.2fm, trying closer", dist);
+        }
+
+        if (fraction < 0.98) {
             RCLCPP_ERROR(this->get_logger(), "Cartesian retraction only %.1f%% complete", fraction * 100.0);
             return false;
         }
+
+        state = arm_->getCurrentState(1);
+        rt.setRobotTrajectoryMsg(*state, trajectory);
+
+        if (!iptp.computeTimeStamps(rt, 0.2, 0.15)) {
+            RCLCPP_ERROR(this->get_logger(), "Time parameterization failed");
+            return false;
+        }
+
+        rt.getRobotTrajectoryMsg(trajectory);
+        arm_->execute(trajectory);
+        RCLCPP_INFO(this->get_logger(), "Cartesian retraction succeeded");
 
         state = arm_->getCurrentState(1);
         //rt(arm_->getRobotModel(), arm_->getName());
