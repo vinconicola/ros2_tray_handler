@@ -519,13 +519,12 @@ def generate_gazebo_launch(moveit_config, launch_package_path=None):
     os.environ["GZ_VERSION"] = "garden"
     os.environ["__EGL_VENDOR_LIBRARY_FILENAMES"] = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
     os.environ["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
-    gazebo_world = "/home/nicola/ros2_ws/src/test.sdf"
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(get_package_share_directory("ros_gz_sim"), "launch", "gz_sim.launch.py")
         ),
         launch_arguments={
-            "gz_args": f"{gazebo_world} -r",
+            "gz_args": "test.sdf -r",
             "gz_version": "7",    # ADD THIS
             "ign_version": ""
         }.items(),
@@ -725,13 +724,12 @@ def generate_demo_gazebo_launch(moveit_config, launch_package_path=None):
     os.environ["GZ_VERSION"] = "garden"
     os.environ["__EGL_VENDOR_LIBRARY_FILENAMES"] = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
     os.environ["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
-    gazebo_world = "/home/nicola/ros2_ws/src/Learning.sdf"
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(get_package_share_directory("ros_gz_sim"), "launch", "gz_sim.launch.py")
         ),
         launch_arguments={
-            "gz_args": f"{gazebo_world} -r",
+            "gz_args": "test.sdf -r",
             "gz_version": "7",    # ADD THIS
             "ign_version": ""
         }.items() 

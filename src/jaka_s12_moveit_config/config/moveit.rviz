@@ -7,8 +7,11 @@ Panels:
         - /MotionPlanning1
         - /TF1
         - /TF1/Frames1
+        - /Image1
+        - /Image1/Topic1
+        - /MarkerArray1
       Splitter Ratio: 0.5
-    Tree Height: 175
+    Tree Height: 162
   - Class: rviz_common/Help
     Name: Help
   - Class: rviz_common/Views
@@ -284,8 +287,6 @@ Visualization Manager:
         All Enabled: false
         Gripper01:
           Value: true
-        Gripper02:
-          Value: true
         Link_01:
           Value: true
         Link_02:
@@ -300,19 +301,19 @@ Visualization Manager:
           Value: true
         base_link:
           Value: true
+        camera_color_frame:
+          Value: true
+        camera_color_optical_frame:
+          Value: true
+        camera_depth_frame:
+          Value: true
+        camera_depth_optical_frame:
+          Value: true
         camera_link:
           Value: true
         camera_optical_frame:
           Value: true
-        rack_0:
-          Value: true
         tcp:
-          Value: true
-        tray_0:
-          Value: true
-        tray_1:
-          Value: true
-        tray_2:
           Value: true
         world:
           Value: true
@@ -331,22 +332,44 @@ Visualization Manager:
                     Link_05:
                       Link_06:
                         Gripper01:
-                          Gripper02:
-                            {}
                           camera_link:
+                            camera_color_frame:
+                              camera_color_optical_frame:
+                                {}
+                            camera_depth_frame:
+                              camera_depth_optical_frame:
+                                {}
                             camera_optical_frame:
                               {}
                           tcp:
                             {}
-          rack_0:
-            {}
-          tray_0:
-            {}
-          tray_1:
-            {}
-          tray_2:
-            {}
       Update Interval: 0
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Image
+      Normalize Range: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /yolo/visualization
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /yolo/obb_markers
       Value: true
   Enabled: true
   Global Options:
@@ -366,7 +389,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 4.706440448760986
+      Distance: 5.835070610046387
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -381,10 +404,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.14999999105930328
+      Pitch: 0.7047975063323975
       Target Frame: world
       Value: Orbit (rviz_default_plugins)
-      Yaw: 2.2570064067840576
+      Yaw: 0.4120092988014221
     Saved: ~
 Window Geometry:
   Displays:
@@ -394,11 +417,13 @@ Window Geometry:
     collapsed: false
   Hide Left Dock: false
   Hide Right Dock: false
+  Image:
+    collapsed: false
   MotionPlanning:
     collapsed: false
   MotionPlanning - Trajectory Slider:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000100000000000001c90000039dfc0200000005fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000003f00fffffffb000000100044006900730070006c006100790073010000003b00000130000000c700fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00670100000171000001a40000016900fffffffb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a00560069006500770073010000031b000000bd000000a000ffffff000001d00000039d00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000100000000000001c90000039dfc0200000006fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000003f00fffffffb000000100044006900730070006c006100790073010000003b00000123000000c700fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00670100000164000001a30000016900fffffffb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007300000002ab0000012d000000a000fffffffb0000000a0049006d006100670065010000030d000000cb0000002800ffffff000001d00000039d00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Views:
     collapsed: false
   Width: 927

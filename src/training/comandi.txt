@@ -5,8 +5,18 @@ ros2 run ros_gz_bridge parameter_bridge /camera/image@sensor_msgs/msg/Image@igni
 
 ros2 launch camera_d435_rotator d435_rotated.launch.py
 ros2 launch jaka_planner moveit_server.launch.py ip:=192.168.0.75 model:=s12
-ros2 launch jaka_driver robot_start.launch.py ip:= 192.168.0.75
 ros2 launch jaka_s12_moveit_config demo.launch.py
 ros2 launch jaka_s12_moveit_config move_group.launch.py
 ros2 run yolo_inference yolo_inference_node.py
 ros2 service call /yolo_inference/trigger_detection std_srvs/srv/Trigger "{}"
+
+
+ros2 launch camera_d435_rotator d435_rotated.launch.py
+ros2 launch jaka_planner moveit_server.launch.py ip:=192.168.0.75 model:=s12
+ros2 launch jaka_s12_moveit_config demo.launch.py      #rviz
+ros2 run yolo_inference yolo_inference_node.py
+
+ros2 launch jaka_movement tray_handler.launch.py
+ros2 launch jaka_movement tray_handler.launch.py --ros-args --remap use_sim_time:=true
+
+ros2 service call /jaka_driver/set_io jaka_msgs/srv/SetIO "{signal: 'digital', type: 0, index: 7, value: 1.0}" #gripper

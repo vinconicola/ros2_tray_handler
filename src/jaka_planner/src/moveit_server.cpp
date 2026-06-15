@@ -3,6 +3,9 @@
 #include "std_srvs/srv/empty.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
+#include "jaka_msgs/srv/set_io.hpp"
+#include <jaka_msgs/srv/set_payload.hpp>
+#include <jaka_msgs/srv/set_collision.hpp>
 
 #include "jaka_planner/JAKAZuRobot.h"
 #include "jaka_planner/jkerr.h"
@@ -317,6 +320,65 @@ int main(int argc, char *argv[])
             goalCb(goal_handle); 
         }
     );
+    // IO service
+    auto io_service = node->create_service<jaka_msgs::srv::SetIO>(
+        "/jaka_driver/set_io",
+        [](const shared_ptr<jaka_msgs::srv::SetIO::Request> request,
+        shared_ptr<jaka_msgs::srv::SetIO::Response> response) {
+            if (request->signal == "digital") {
+                BOOL val = (request->value > 0.5f) ? TRUE : FALSE;
+                int ret = robot.set_digital_output((IOType)request->type, request->index, val);
+                response->ret = ret;
+                response->message = (ret == 0) ? "OK" : "error";
+            } else {
+                response->ret = -1;
+                response->message = "unsupported signal type";
+            }
+        });
+        // Payload Service
+        auto payload_service = node->create_service<jaka_msgs::srv::SetPayload>(
+        "/jaka_driver/set_payload",
+        [](const std::shared_ptr<jaka_msgs::srv::SetPayload::Request> request,
+           std::shared_ptr<jaka_msgs::srv::SetPayload::Response> response) {
+            
+            PayLoad jaka_payload;
+            // ROS 2 service likely uses request->mass representation
+            jaka_payload.mass = request->mass; 
+            
+            // JAKA native SDK uses a CartesianTran struct wrapper (.centroid.x)
+            jaka_payload.centroid.x = request->xc; 
+            jaka_payload.centroid.y = request->yc;
+            jaka_payload.centroid.z = request->zc;
+
+            // Call native SDK function
+            int ret = robot.set_payload(&jaka_payload); 
+            
+            response->ret = ret;
+            response->message = (ret == 0) ? "Payload updated successfully" : "Error setting payload";
+        });
+        
+        // Collision Sensitivity Service
+        auto collision_service = node->create_service<jaka_msgs::srv::SetCollision>(
+        "/jaka_driver/set_collision_level",
+        [](const std::shared_ptr<jaka_msgs::srv::SetCollision::Request> request,
+           std::shared_ptr<jaka_msgs::srv::SetCollision::Response> response) {
+            
+            // ROS 2 SetCollision request tracks the target level inside the .value parameter
+            int collision_level = request->value; 
+
+            if (collision_level < 0 || collision_level > 5) {
+                response->ret = -1;
+                response->message = "Invalid collision level. Must be 0-5.";
+                return;
+            }
+
+            // Execute the native C++ SDK level setting logic
+            int ret = robot.set_collision_level(collision_level);
+            
+            response->ret = ret;
+            response->message = (ret == 0) ? "Collision level updated" : "Error setting collision level";
+        });
+
 
     RCLCPP_INFO(rclcpp::get_logger("moveit_server"), "==================Moveit Start==================");
 
