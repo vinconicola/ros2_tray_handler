@@ -138,7 +138,7 @@ public:
         if (!use_real_gripper_) return;
     
         auto req = std::make_shared<jaka_msgs::srv::SetPayload::Request>();
-        req->mass = weight; // <-- Changed from .weight to .mass
+        req->mass = weight;
         req->xc = x;
         req->yc = y;
         req->zc = z;
@@ -662,7 +662,7 @@ public:
 
             current_pose = arm_->getCurrentPose();
             geometry_msgs::msg::Pose retreat_pose = current_pose.pose;
-            retreat_pose.position.z -= 0.03;
+            retreat_pose.position.z -= 0.025;
             arm_->setPoseTarget(retreat_pose);
             arm_->move();
             set_robot_payload(1.77, 0.0, 0.0, 65.0);
@@ -1106,7 +1106,7 @@ int main(int argc, char** argv) {
         node->face_rack_slot(refined[0], 7, true);
         node->face_rack_slot(refined[0], 8, false, true);
         node->pick_from_box(node->BOX_POSE);
-        node->face_rack_slot(refined[0], 7, false, true);
+        node->face_rack_slot(refined[0], 9, false, true);
         // node->face_rack_slot(refined[1], 5);
         // node->face_rack_slot(refined[0], 4);
         // node->face_rack_slot(refined[1], 5);
