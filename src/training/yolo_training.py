@@ -3,33 +3,31 @@ from ultralytics import YOLO
 model = YOLO('/home/nicola/ros2_ws/src/yolo_inference/weights/best.pt')  # your existing checkpoint
 
 model.train(
-    data='/home/nicola/ros2_ws/data/yolo_RW_dataset/dataset.yaml',
-    epochs=200,
+    data='/home/nicola/ros2_ws/data/yolo_RW_dataset2/dataset.yaml',
+    epochs=100,          # early stopping will handle the rest
     imgsz=640,
     task='segment',
-    batch=8,           # adjust based on your GPU VRAM
-    patience=30,       # early stopping
-    device=0,          # GPU, or 'cpu'
-    
-    # Augmentation — critical for synthetic→real gap
-    hsv_h=0.02,        # hue shift (lighting differences)
-    hsv_s=0.7,         # saturation (synthetic colors are often too clean)
-    hsv_v=0.5,         # brightness variation
-    degrees=10,        # small rotations
+    batch=8,
+    patience=20,         # tighter — 125 imgs epochs are fast
+    device=0,
+
+    # Augmentation
+    hsv_h=0.02,
+    hsv_s=0.7,
+    hsv_v=0.4,
+    degrees=10,
     translate=0.1,
-    scale=0.5,
+    scale=0.4,
     fliplr=0.5,
-    mosaic=1.0,
-    mixup=0.1,         # blends real images together
+    mosaic=0.7,          # slightly reduced for small dataset
+    mixup=0.1,
 
-    # Freezing — fine-tune only the head first
-    freeze=10,         # freeze first 10 backbone layers
+    freeze=5,            # unfreeze more layers for domain shift
 
-    lr0=0.001,         # lower LR since we're fine-tuning
+    lr0=0.0005,          # even lower LR for gentle fine-tuning
     lrf=0.01,
-    warmup_epochs=3,
-    
-    
+    warmup_epochs=2,
+
     project='runs',
-    name='tray_rack_v2',
+    name='tray_rack_v3',
 )
