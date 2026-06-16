@@ -1,9 +1,9 @@
 from ultralytics import YOLO
 
-model = YOLO('/home/nicola/ros2_ws/src/yolo_inference/weights/best.pt')  # your existing checkpoint
+model = YOLO('src/yolo_inference/weights/best.pt')  # your existing checkpoint
 
 model.train(
-    data='/home/nicola/ros2_ws/data/yolo_RW_dataset2/dataset.yaml',
+    data='data/yolo_RW_dataset2/dataset.yaml',
     epochs=100,          # early stopping will handle the rest
     imgsz=640,
     task='segment',

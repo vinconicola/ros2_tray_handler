@@ -12,9 +12,9 @@ out_dir = '/home/nicola/ros2_ws/data/real_world/images'
 os.makedirs(out_dir, exist_ok=True)
 
 bag_files = [
-    '/home/nicola/ros2_ws/data/bag/20260401_093235.bag',
-    '/home/nicola/ros2_ws/data/bag/20260401_094240.bag',
-    '/home/nicola/ros2_ws/data/bag/20260401_094433.bag',
+    'data/bag/20260401_093235.bag',
+    'data/bag/20260401_094240.bag',
+    'data/bag/20260401_094433.bag',
 ]
 
 saved = 0

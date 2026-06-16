@@ -31,9 +31,9 @@ CLASS_COLORS = {
 }
 
 if (not SIM):
-    MODEL_PATH = '/home/nicola/ros2_ws/src/yolo_inference/weights/best.pt'
+    MODEL_PATH = 'src/yolo_inference/weights/best.pt'
 else:
-    MODEL_PATH = '/home/nicola/ros2_ws/src/yolo_inference/weights/best_sim.pt'
+    MODEL_PATH = 'src/yolo_inference/weights/best_sim.pt'
 
 # Filtering parameters
 MIN_CLUSTER_POINTS = 100    # ignore tiny detections

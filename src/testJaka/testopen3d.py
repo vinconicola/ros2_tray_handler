@@ -7,7 +7,7 @@ cfg = _ml3d.utils.Config.load_from_file(cfg_file)
 
 model = ml3d.models.KPFCNN(**cfg.model)  # ← fixed: match model to config
 
-cfg.dataset['dataset_path'] = "/home/nicola/ros2_ws/data"
+cfg.dataset['dataset_path'] = "data"
 dataset = ml3d.datasets.SemanticKITTI(cfg.dataset.pop('dataset_path', None), **cfg.dataset)
 pipeline = ml3d.pipelines.SemanticSegmentation(model, dataset=dataset, device="gpu", **cfg.pipeline)
 

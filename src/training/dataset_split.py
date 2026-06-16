@@ -3,9 +3,9 @@ import random
 from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
-IMAGES_DIR  = Path('/home/nicola/ros2_ws/data/yolo_RW_dataset2/images')    # your existing flat images folder
-LABELS_DIR  = Path('/home/nicola/ros2_ws/data/yolo_RW_dataset2/labels')    # your existing flat labels folder
-OUTPUT_DIR  = Path('/home/nicola/ros2_ws/data/yolo_RW_dataset2')
+IMAGES_DIR  = Path('data/yolo_RW_dataset2/images')    # your existing flat images folder
+LABELS_DIR  = Path('data/yolo_RW_dataset2/labels')    # your existing flat labels folder
+OUTPUT_DIR  = Path('data/yolo_RW_dataset2')
 VAL_SPLIT   = 0.15
 SEED        = 42
 # ─────────────────────────────────────────────────────────────────────────────

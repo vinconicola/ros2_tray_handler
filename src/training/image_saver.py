@@ -22,7 +22,7 @@ class ImageSaverNode(Node):
         self.bridge = CvBridge()
         
         # Setup output directory
-        self.output_dir = os.path.expanduser('/home/nicola/ros2_ws/src/training/real_world/dataset2/images')
+        self.output_dir = os.path.expanduser('src/training/real_world/dataset2/images')
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
             

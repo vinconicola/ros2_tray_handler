@@ -22,7 +22,7 @@ class YoloDataCollector(Node):
     def __init__(self):
         super().__init__('yolo_data_collector')
 
-        self.declare_parameter('output_dir', '/home/nicola/ros2_ws/data/yolo_dataset')
+        self.declare_parameter('output_dir', 'data/yolo_dataset')
         self.declare_parameter('save_interval', 5)  # save every N frames
         self.declare_parameter('max_frames', 2000)
 

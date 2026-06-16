@@ -1,6 +1,6 @@
 import json
 
-with open('/home/nicola/ros2_ws/src/training/RW_COCO_dataset2/result_coco.json', 'r') as f:
+with open('src/training/RW_COCO_dataset2/result_coco.json', 'r') as f:
     data = json.load(f)
 
 # Remap: rack(1)->1, tray(2)->0 in YOLO 0-indexed
