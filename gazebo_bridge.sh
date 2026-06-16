@@ -1,0 +1,2 @@
+#!/bin/bash
+ros2 run ros_gz_bridge parameter_bridge /camera/image@sensor_msgs/msg/Image@gz.msgs.Image /camera/depth_image@sensor_msgs/msg/Image@gz.msgs.Image /camera/camera_info@sensor_msgs/msg/CameraInfo@gz.msgs.CameraInfo /camera/points@sensor_msgs/msg/PointCloud2@gz.msgs.PointCloudPacked /clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock /camera/segmentation/colored_map@sensor_msgs/msg/Image@gz.msgs.Image /camera/segmentation/labels_map@sensor_msgs/msg/Image@gz.msgs.Image
