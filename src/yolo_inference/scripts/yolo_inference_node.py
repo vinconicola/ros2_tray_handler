@@ -26,8 +26,8 @@ IMG_H = 480
 
 CLASS_NAMES  = {0: 'tray', 1: 'rack'}
 CLASS_COLORS = {
-    0: (255, 180, 100),  # tray  → orange
-    1: (180, 100, 255),  # rack  → purple
+    0: (255, 180, 100),  # tray  -> orange
+    1: (180, 100, 255),  # rack  -> purple
 }
 
 if (not SIM):
@@ -50,10 +50,8 @@ class YoloInferenceNode(Node):
         self.model   = YOLO(MODEL_PATH)
         self.tf_broadcaster = TransformBroadcaster(self)
         
-        # --- Snapshot Logic ---
         self.detect_requested = False 
         self.srv = self.create_service(Trigger, '~/trigger_detection', self.handle_trigger)
-        # ----------------------
 
         self.rgb_sub = Subscriber(self, Image, '/camera/image')
         self.depth_sub = Subscriber(self, Image, '/camera/depth_image')
@@ -100,7 +98,7 @@ class YoloInferenceNode(Node):
         m.pose.position.y = float(obb_center[1])
         m.pose.position.z = float(obb_center[2])
 
-        # Convert eigenvectors rotation matrix → quaternion
+        # Convert eigenvectors rotation matrix to quaternion
         R = eigenvectors.copy()
         if np.linalg.det(R) < 0:
             R[:, 2] *= -1
@@ -197,8 +195,6 @@ class YoloInferenceNode(Node):
         pts = points_xyz.astype(np.float64)
 
         # Replace NaN/inf with 0 just for the transform — invalid points stay
-        # identifiable downstream because their XYZ will be (tr.x, tr.y, tr.z),
-        # which won't pass any distance filter
         valid_mask = np.isfinite(pts).all(axis=1)
         pts[~valid_mask] = 0.0
 
@@ -215,13 +211,6 @@ class YoloInferenceNode(Node):
         if len(points) == 0:
             return points
 
-        # Depth filter
-        # depths = points[:, 0]
-        # mask = (depths > MIN_DEPTH) & (depths < MAX_DEPTH)
-        # points = points[mask]
-        # if len(points) < MIN_CLUSTER_POINTS:
-        #     return np.array([])
-
         # Floor filter — remove bottom 5% of Z values
         z_floor = np.percentile(points[:, 2], 5)
         points = points[points[:, 2] > z_floor]
@@ -237,18 +226,18 @@ class YoloInferenceNode(Node):
         inliers = np.all(np.abs(points - mean) < std_threshold * std, axis=1)
         return points[inliers]
     
-    def get_surface_with_normal(self, points, label='tray'):
+    def get_tray_normal(self, points, label='tray'):
         """
-        Find front vertical face center and inward normal for each stacked tray layer.
-        Approach: split into Z-layers, project each layer to XY, fit a minimum-area
-        rotated rectangle (cv2.minAreaRect) to the XY footprint, then lift back to 3D
-        using the layer's Z extent for height.
-        Returns a list of (face_centroid, normal, eigenvectors, half_extents, obb_center) tuples.
+        Detects tray layers from a 3D point cloud using Z-histogram peak detection.
+        For each layer, fits a 2D rotated bounding rectangle (minAreaRect) to the XY
+        footprint to determine orientation. Returns a list of tuples containing the
+        face centroid, surface normal, eigenvectors, half-extents, and OBB center
+        for each detected layer.
         """
         if len(points) < 50:
             return []
 
-        # ── Step 1: Detect tray layers by Z histogram peaks ───────────────────────
+        # detect tray layers by Z histogram peaks
         z_vals          = points[:, 2]
         n_bins          = max(20, min(60, len(points) // 10))
         z_hist, z_edges = np.histogram(z_vals, bins=n_bins)
@@ -270,7 +259,7 @@ class YoloInferenceNode(Node):
 
         for idx, peak_idx in enumerate(peak_indices):
 
-            # ── Step 2: Extract layer using valley boundaries ──────────────────────
+            # extract layer using valley boundaries
             z_lo = z_edges[0] if idx == 0 else \
                 z_centers[peak_indices[idx - 1]:peak_idx + 1][
                     np.argmin(z_hist[peak_indices[idx - 1]:peak_idx + 1])
@@ -284,18 +273,16 @@ class YoloInferenceNode(Node):
             if len(layer) < 20:
                 continue
 
-            # Trim top/bottom 10% in Z to remove fringe points (floor/ceiling of layer)
+            # Trim top/bottom 10% in Z to remove fringe points
             z_lo_layer = np.percentile(layer[:, 2], 10)
             z_hi_layer = np.percentile(layer[:, 2], 90)
             layer = layer[(layer[:, 2] >= z_lo_layer) & (layer[:, 2] <= z_hi_layer)]
             if len(layer) < 20:
                 continue
 
-            # ── Step 3: Fit a 2D rotated rectangle to the XY footprint ─────────────
+            # fit a 2D rotated rectangle to the XY footprint
             xy = layer[:, :2].astype(np.float32)
 
-            # Remove gross outliers before computing the hull, so a few stray
-            # points don't blow up the rectangle. Use median + percentile radius.
             center_xy = np.median(xy, axis=0)
             radii = np.linalg.norm(xy - center_xy, axis=1)
             radius_thresh = np.percentile(radii, 97)
@@ -316,7 +303,7 @@ class YoloInferenceNode(Node):
             axis_w = np.array([np.cos(angle_rad), np.sin(angle_rad), 0.0])
             axis_h = np.array([-np.sin(angle_rad), np.cos(angle_rad), 0.0])
 
-            # ── Step 4: Decide which rectangle axis is "depth" (toward camera) ─────
+            # decide which rectangle axis is "depth" (toward camera)
             rect_center_2d = np.array([rect_cx, rect_cy])
             toward_camera_2d = -rect_center_2d / (np.linalg.norm(rect_center_2d) + 1e-6)
 
@@ -330,7 +317,6 @@ class YoloInferenceNode(Node):
                 depth_vec_2d, depth_extent = axis_h, rect_h
                 width_vec_2d, width_extent = axis_w, rect_w
 
-            # Orient depth axis to point toward the camera (front face faces sensor)
             if np.dot(depth_vec_2d[:2], toward_camera_2d) < 0:
                 depth_vec_2d = -depth_vec_2d
 
@@ -344,17 +330,16 @@ class YoloInferenceNode(Node):
 
             eigenvectors = np.column_stack([depth_vec, width_vec, height_vec])
 
-            # ── Step 5: Lift back to 3D ─────────────────────────────────────────────
+            # lift back to 3D 
             z_center = (layer[:, 2].min() + layer[:, 2].max()) / 2.0
             z_half   = (layer[:, 2].max() - layer[:, 2].min()) / 2.0
 
+            # OBB and normal
             obb_center = np.array([rect_cx, rect_cy, z_center])
             half_extents = np.array([depth_extent / 2.0, width_extent / 2.0, z_half])
 
-            # Front face centroid: OBB center pushed forward along depth axis
             face_centroid = obb_center + depth_vec * half_extents[0]
 
-            # ── Step 6: Normal ───────────────────────────────────────────────────────
             normal = depth_vec.copy()  # already XY-only, normalized, z=0
 
             results.append((face_centroid, normal, eigenvectors, half_extents, obb_center))
@@ -370,17 +355,20 @@ class YoloInferenceNode(Node):
 
     def get_rack_opening(self, points, label='rack'):
         """
-        Simple, Data-Driven Pose Estimation for a front-view U-rack with NO back wall.
-        Splits points into Left/Right arms using 2D K-Means spatial clustering, 
-        then applies independent local statistical filters.
+        Estimates the opening of a rack from its 3D point cloud by projecting points
+        onto the XY plane and splitting them into two clusters (left/right arms) via
+        K-Means. Extracts the front tip of each arm, computes their midpoint as the
+        opening centroid, and derives a surface normal perpendicular to the arm span
+        pointing toward the camera. Returns the centroid and normal, or (None, None)
+        if the cluster is invalid.
         """
         if len(points) < MIN_CLUSTER_POINTS:
             return None, None
 
-        # 1. Project points onto the 2D horizontal plane (Discard Z)
+        # Project points onto the 2D horizontal plane (Discard Z)
         points_2d = points[:, :2].astype(np.float64)
 
-        # 2. Split the raw points into two clusters based on BOTH X and Y using K-Means
+        # Split the raw points into two clusters using K-Means
         kmeans = KMeans(n_clusters=2, n_init=10, random_state=42).fit(points_2d)
         labels = kmeans.labels_
         cluster_centers = kmeans.cluster_centers_
@@ -396,30 +384,23 @@ class YoloInferenceNode(Node):
         left_arm_raw = points_2d[left_mask]
         right_arm_raw = points_2d[right_mask]
 
-        # 3. STRICT CHECK: Ensure both sides have enough data before filtering
         if len(left_arm_raw) < (MIN_CLUSTER_POINTS // 3) or len(right_arm_raw) < (MIN_CLUSTER_POINTS // 3):
             self.get_logger().debug("Rack tracking skipped: Points are heavily concentrated on only one arm.")
             return None, None
 
-        # =========================================================================
-        # LOCAL STATISTICAL FILTERING
-        # =========================================================================
-        # Clean Left Arm: Filter points based on distance to the left arm's own center
+        # statistical filter on each arm
         left_median = np.median(left_arm_raw, axis=0)
         left_distances = np.linalg.norm(left_arm_raw - left_median, axis=1)
         left_cleaned = left_arm_raw[left_distances < np.percentile(left_distances, 96)]
 
-        # Clean Right Arm: Filter points based on distance to the right arm's own center
         right_median = np.median(right_arm_raw, axis=0)
         right_distances = np.linalg.norm(right_arm_raw - right_median, axis=1)
         right_cleaned = right_arm_raw[right_distances < np.percentile(right_distances, 96)]
-        # =========================================================================
 
-        # Ensure we still have enough valid data after the local filtering
         if len(left_cleaned) < 15 or len(right_cleaned) < 15:
             return None, None
 
-        # 4. Extract the exact 'Front Tips' facing the camera
+        # extract the front tip of each arm
         left_tip_y = np.percentile(left_cleaned[:, 1], 2)
         left_tip_x = np.median(left_cleaned[left_cleaned[:, 1] < np.percentile(left_cleaned[:, 1], 10), 0])
         left_tip = np.array([left_tip_x, left_tip_y])
@@ -428,23 +409,20 @@ class YoloInferenceNode(Node):
         right_tip_x = np.median(right_cleaned[right_cleaned[:, 1] < np.percentile(right_cleaned[:, 1], 10), 0])
         right_tip = np.array([right_tip_x, right_tip_y])
 
-        # 5. Centroid is the clean mathematical midpoint of the opening gap
+        # centroid is the mathematical midpoint of the opening gap
         center_2d = (left_tip + right_tip) / 2.0
 
-        # 6. Compute Yaw Orientation from the line connecting the two tips
+        # calculate normal
         width_vector = right_tip - left_tip
         width_vector /= np.linalg.norm(width_vector) + 1e-6
 
-        # The normal vector is strictly perpendicular to the connecting line of the tips
         normal_2d = np.array([-width_vector[1], width_vector[0]])
         
-        # Ensure normal vector points back toward the camera frame (negative Y direction)
         if normal_2d[1] > 0:
             normal_2d = -normal_2d
         normal_2d /= np.linalg.norm(normal_2d) + 1e-6
 
-        # 7. Package into standard 3D outputs expected by your node's publishers
-        centroid = np.array([center_2d[0], center_2d[1], np.mean(points[:, 2])])
+        centroid = np.array([center_2d[0], center_2d[1], np.mean(points[:, 2])]) #z positioning of the rack is not relevant
         normal = np.array([normal_2d[0], normal_2d[1], 0.0])
 
         return centroid, normal
@@ -491,7 +469,7 @@ class YoloInferenceNode(Node):
             ])
             R = np.eye(3) + vx + vx @ vx * ((1 - c) / (s ** 2))
 
-            # Rotation matrix → quaternion (Shepperd's method)
+            # Rotation matrix ->quaternion (Shepperd's method)
             trace = R[0,0] + R[1,1] + R[2,2]
             if trace > 0:
                 sq = 0.5 / np.sqrt(trace + 1.0)
@@ -532,12 +510,10 @@ class YoloInferenceNode(Node):
 
     def get_instances(self, points_xyz, label_mask, cls_id, mask_binary, std_threshold=1.0):
         """Split a class mask into individual instances using connected components."""
-        # Erode mask to remove border pixels that bleed onto background
-        # Fill small holes first (Closing)
+        
         kernel = np.ones((3, 3), np.uint8)
         mask_closed = cv2.morphologyEx(mask_binary, cv2.MORPH_CLOSE, kernel)
         
-        # Then erode to clean the edges
         mask_eroded = cv2.erode(mask_closed, kernel, iterations=1)
         
         labeled_array, num_features = ndimage.label(mask_eroded)
@@ -596,8 +572,9 @@ class YoloInferenceNode(Node):
             np.arange(img_h, dtype=np.float32)
         )
         z = depth
-        x_optical = (u_coords - cx) * z / fx
-        y_optical = (v_coords - cy) * z / fy
+        with np.errstate(invalid='ignore'):
+            x_optical = (u_coords - cx) * z / fx
+            y_optical = (v_coords - cy) * z / fy
 
 
         xyz = np.stack((x_optical, y_optical, z), axis=-1).astype(np.float32)
@@ -610,7 +587,6 @@ class YoloInferenceNode(Node):
         if not self.detect_requested:
             return
 
-        # 2. Reset the flag immediately so we don't process more than one frame
         self.detect_requested = False
         
         self.get_logger().info('Processing snapshot...')
@@ -622,21 +598,6 @@ class YoloInferenceNode(Node):
         arr, visible_mask = self.build_points_from_depth(depth_msg, camera_info_msg, rgb.shape)
         if arr is None:
             return
-        # #debug
-        # arr_flat_debug = arr.reshape(-1, 3)
-        # valid_pts = arr_flat_debug[np.isfinite(arr_flat_debug).all(axis=1)]
-        # self.get_logger().info(
-        #     f'RAW optical points\n'
-        #     f'  x (right):   min={valid_pts[:,0].min():.3f}  max={valid_pts[:,0].max():.3f}  mean={valid_pts[:,0].mean():.3f}\n'
-        #     f'  y (down):    min={valid_pts[:,1].min():.3f}  max={valid_pts[:,1].max():.3f}  mean={valid_pts[:,1].mean():.3f}\n'
-        #     f'  z (forward): min={valid_pts[:,2].min():.3f}  max={valid_pts[:,2].max():.3f}  mean={valid_pts[:,2].mean():.3f}'
-        # )
-        # self.get_logger().info(
-        #     f'Intrinsics — fx={camera_info_msg.k[0]:.2f}  fy={camera_info_msg.k[4]:.2f}  '
-        #     f'cx={camera_info_msg.k[2]:.2f}  cy={camera_info_msg.k[5]:.2f}  '
-        #     f'encoding={depth_msg.encoding}'
-        # )
-        # #
 
         arr_world = self.transform_points_to_world(
             arr.reshape(-1, 3),
@@ -648,15 +609,6 @@ class YoloInferenceNode(Node):
         arr_world_img = arr_world.reshape((img_h, img_w, 3))
         arr_world_flat = arr_world_img.reshape(-1, 3)
         visible_mask &= np.isfinite(arr_world_img).all(axis=2)
-        # # debug
-        # valid_w = arr_world_flat[np.isfinite(arr_world_flat).all(axis=1)]
-        # self.get_logger().info(
-        #     f'WORLD points\n'
-        #     f'  x: min={valid_w[:,0].min():.3f}  max={valid_w[:,0].max():.3f}  mean={valid_w[:,0].mean():.3f}\n'
-        #     f'  y: min={valid_w[:,1].min():.3f}  max={valid_w[:,1].max():.3f}  mean={valid_w[:,1].mean():.3f}\n'
-        #     f'  z: min={valid_w[:,2].min():.3f}  max={valid_w[:,2].max():.3f}  mean={valid_w[:,2].mean():.3f}'
-        # )
-        # #
 
         # Run YOLOv8
         results = self.model(rgb, verbose=False)[0]
@@ -694,7 +646,7 @@ class YoloInferenceNode(Node):
 
         found_rack_positions = []
         
-        # ── Trays ──
+        # Trays
         tray_count = 0
         all_found_centroids = []
         marker_array = MarkerArray()
@@ -706,7 +658,7 @@ class YoloInferenceNode(Node):
             pts_all_trays = arr_world_img[merged_tray_mask]
 
             if len(pts_all_trays) >= MIN_CLUSTER_POINTS:
-                detections = self.get_surface_with_normal(pts_all_trays, 'tray')
+                detections = self.get_tray_normal(pts_all_trays, 'tray')
 
                 for centroid, normal, eigenvectors, half_extents, obb_center in detections:
                     frame_id = f'tray_{tray_count}'
@@ -730,7 +682,7 @@ class YoloInferenceNode(Node):
 
         self.obb_pub.publish(marker_array)
 
-        # ── Racks ──
+        # Racks
         rack_count = 0
         if rack_masks:
             merged_rack_mask = np.maximum.reduce(rack_masks)
@@ -761,7 +713,7 @@ class YoloInferenceNode(Node):
                         continue
                     centroid_b = inst_b.mean(axis=0)
                     dist_xy = np.linalg.norm(centroid_a[:2] - centroid_b[:2])
-                    if dist_xy < 1:  # merge instances within 1.5m XY
+                    if dist_xy < 1:  # merge instances within 1m XY
                         group.append(inst_b)
                         used[j] = True
 
@@ -779,7 +731,7 @@ class YoloInferenceNode(Node):
                         found_rack_positions.append(centroid)
                         rack_count += 1
                                         
-        # ── Labeled point cloud ────────────────────────────────────────────────
+        # Labeled point cloud
         label_flat   = label_mask.reshape(-1)
         point_labels = label_flat
 
@@ -818,7 +770,6 @@ class YoloInferenceNode(Node):
             points_with_labels
         )
         self.get_logger().info('Snapshot processing complete.')
-        #self.get_logger().info(f'Publishing cloud with {len(points_with_labels)} points, frame: {header.frame_id}')
         return cloud
 
 

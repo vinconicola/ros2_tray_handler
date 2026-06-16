@@ -1,17 +1,17 @@
 Panels:
   - Class: rviz_common/Displays
-    Help Height: 70
+    Help Height: 0
     Name: Displays
     Property Tree Widget:
       Expanded:
         - /MotionPlanning1
-        - /TF1
-        - /TF1/Frames1
-        - /Image1
+        - /MotionPlanning1/Planning Request1
+        - /MotionPlanning1/Planning Metrics1
+        - /MotionPlanning1/Planned Path1
         - /Image1/Topic1
-        - /MarkerArray1
+        - /RobotModel1
       Splitter Ratio: 0.5
-    Tree Height: 162
+    Tree Height: 175
   - Class: rviz_common/Help
     Name: Help
   - Class: rviz_common/Views
@@ -64,7 +64,7 @@ Visualization Manager:
       Name: MotionPlanning
       Planned Path:
         Color Enabled: false
-        Interrupt Display: false
+        Interrupt Display: true
         Links:
           All Links Enabled: true
           Expand Joint Details: false
@@ -134,7 +134,7 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
         Loop Animation: true
-        Robot Alpha: 0.5
+        Robot Alpha: 0.10000000149011612
         Robot Color: 150; 50; 150
         Show Robot Collision: false
         Show Robot Visual: true
@@ -157,7 +157,7 @@ Visualization Manager:
         Interactive Marker Size: 0
         Joint Violation Color: 255; 0; 255
         Planning Group: jaka_s12
-        Query Goal State: true
+        Query Goal State: false
         Query Start State: false
         Show Workspace: false
         Start State Alpha: 1
@@ -302,22 +302,36 @@ Visualization Manager:
         base_link:
           Value: true
         camera_color_frame:
-          Value: true
+          Value: false
         camera_color_optical_frame:
-          Value: true
+          Value: false
         camera_depth_frame:
-          Value: true
+          Value: false
         camera_depth_optical_frame:
-          Value: true
+          Value: false
         camera_link:
           Value: true
         camera_optical_frame:
+          Value: false
+        rack_0:
+          Value: true
+        rack_1:
           Value: true
         tcp:
           Value: true
+        tray_0:
+          Value: true
+        tray_1:
+          Value: true
+        tray_2:
+          Value: true
+        tray_3:
+          Value: true
+        tray_4:
+          Value: true
         world:
           Value: true
-      Marker Scale: 1
+      Marker Scale: 0.699999988079071
       Name: TF
       Show Arrows: true
       Show Axes: true
@@ -343,6 +357,20 @@ Visualization Manager:
                               {}
                           tcp:
                             {}
+          rack_0:
+            {}
+          rack_1:
+            {}
+          tray_0:
+            {}
+          tray_1:
+            {}
+          tray_2:
+            {}
+          tray_3:
+            {}
+          tray_4:
+            {}
       Update Interval: 0
       Value: true
     - Class: rviz_default_plugins/Image
@@ -363,7 +391,7 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        {}
+        tray: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -371,6 +399,94 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /yolo/obb_markers
       Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: false
+      Description File: ""
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot_description
+      Enabled: true
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        Gripper01:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Gripper02:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Link Tree Style: Links in Alphabetic Order
+        Link_01:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Link_02:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Link_03:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Link_04:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Link_05:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Link_06:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        camera_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        camera_optical_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        tcp:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        world:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+      Mass Properties:
+        Inertia: false
+        Mass: false
+      Name: RobotModel
+      TF Prefix: ""
+      Update Interval: 0
+      Value: true
+      Visual Enabled: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -389,25 +505,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 5.835070610046387
+      Distance: 4.392098903656006
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.07575920224189758
-        Y: 0.8232869505882263
-        Z: 0.6510117650032043
+        X: -0.365095853805542
+        Y: 0.3624970316886902
+        Z: 1.004883050918579
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.7047975063323975
+      Pitch: 0.6847972273826599
       Target Frame: world
       Value: Orbit (rviz_default_plugins)
-      Yaw: 0.4120092988014221
+      Yaw: 0.9720088243484497
     Saved: ~
 Window Geometry:
   Displays:
@@ -423,9 +539,9 @@ Window Geometry:
     collapsed: false
   MotionPlanning - Trajectory Slider:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000100000000000001c90000039dfc0200000006fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000003f00fffffffb000000100044006900730070006c006100790073010000003b00000123000000c700fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00670100000164000001a30000016900fffffffb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007300000002ab0000012d000000a000fffffffb0000000a0049006d006100670065010000030d000000cb0000002800ffffff000001d00000039d00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000100000000000001c90000039dfc0200000006fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000001600000016fb000000100044006900730070006c006100790073010000003b000000ea000000c700fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e0067010000012b000001750000016a00fffffffb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007300000002ab0000012d000000a000fffffffb0000000a0049006d00610067006501000002a6000001320000002800ffffff000003040000039d00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Views:
     collapsed: false
-  Width: 927
+  Width: 1235
   X: 66
   Y: 32

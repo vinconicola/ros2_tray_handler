@@ -1,5 +1,5 @@
 ros2 launch jaka_s12_moveit_config gazebo.launch.py
-ros2 launch jaka_s12_moveit_config demo.launch.py use_rviz_sim:=true
+ros2 launch jaka_s12_moveit_config moveit_rviz.launch.py
 colcon build --symlink-install 
 ros2 run ros_gz_bridge parameter_bridge /camera/image@sensor_msgs/msg/Image@ignition.msgs.Image /camera/depth_image@sensor_msgs/msg/Image@ignition.msgs.Image /camera/camera_info@sensor_msgs/msg/CameraInfo@ignition.msgs.CameraInfo /camera/points@sensor_msgs/msg/PointCloud2@ignition.msgs.PointCloudPacked /clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock
 

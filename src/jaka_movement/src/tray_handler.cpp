@@ -11,7 +11,7 @@
 #include <std_srvs/srv/trigger.hpp>
 #include <jaka_msgs/srv/set_io.hpp>
 #include <jaka_msgs/srv/set_payload.hpp>
-#include <jaka_msgs/srv/set_collision.hpp> // <-- Changed from set_collision_level.hpp
+#include <jaka_msgs/srv/set_collision.hpp> 
 
 using namespace std::chrono_literals;
 
@@ -72,19 +72,14 @@ public:
 
         trigger_client_ = this->create_client<std_srvs::srv::Trigger>("/yolo_inference/trigger_detection");
 
-        // joint_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
-        //     "/joint_states", 10, 
-        //     [this](const sensor_msgs::msg::JointState::SharedPtr msg) {
-        //         last_joint_state_ = *msg;
-        //     });
     }
 
     // --- helpers ---
     void useOMPL() {
         arm_->setPlanningPipelineId("ompl");
         arm_->setPlannerId("RRTConnectkConfigDefault");
-        arm_->setGoalPositionTolerance(0.005);      // 1mm position tolerance
-        arm_->setGoalOrientationTolerance(0.01);    // ~0.5° orientation tolerance
+        arm_->setGoalPositionTolerance(0.005);      
+        arm_->setGoalOrientationTolerance(0.01);    
         arm_->setPlanningTime(5.0);
     }
 
@@ -106,14 +101,54 @@ public:
         trigger_client_->async_send_request(request);
         
         // Give YOLO a moment to finish processing and TF to update
-        rclcpp::sleep_for(2s); 
+        rclcpp::sleep_for(1s); 
         RCLCPP_INFO(this->get_logger(), "YOLO scan wait complete");
     }
 
+    void setHeightConstraint(double max_z) {
+        moveit_msgs::msg::Constraints constraints;
+        
+        moveit_msgs::msg::PositionConstraint pcm;
+        pcm.header.frame_id = "world";
+        pcm.link_name = arm_->getEndEffectorLink();
+
+        // Define the shape of the constraint (a Box)
+        shape_msgs::msg::SolidPrimitive box;
+        box.type = shape_msgs::msg::SolidPrimitive::BOX;
+        
+        //Y costraint to avoid smashing into the box
+        
+        box.dimensions.resize(3);
+        box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_X] = 10.0; 
+        box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Y] = 2.6;
+        box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z] = max_z;
+
+        // Define the Pose of the Box
+        // The box is centered at its origin
+        geometry_msgs::msg::Pose box_pose;
+        box_pose.position.x = 0.0;
+        box_pose.position.y = 1.3;
+        box_pose.position.z = max_z / 2.0; 
+        box_pose.orientation.w = 1.0;
+
+        // Add the box and its pose to the constraint
+        pcm.constraint_region.primitives.push_back(box);
+        pcm.constraint_region.primitive_poses.push_back(box_pose);
+        pcm.weight = 1.0;
+
+        constraints.position_constraints.push_back(pcm);
+        
+        arm_->setPathConstraints(constraints);
+    }
+
+    void clearConstraints() {
+        arm_->clearPathConstraints();
+    }
+    
     void set_gripper(bool close) {
         if (use_real_gripper_) {
             auto req = std::make_shared<jaka_msgs::srv::SetIO::Request>();
-            req->signal = "digital";   // check exact string with your driver docs
+            req->signal = "digital"; 
             req->type   = 0;      // 0 = digital
             req->index  = 7;      // DO8
             req->value  = close ? 1.0f : 0.0f;
@@ -170,19 +205,26 @@ public:
         }
     }
 
-    // --- 1. SCANNING ---
+    bool pick(const Rack& rack, int slot_index){
+        return face_rack_slot(rack, slot_index, true);
+    }
+
+    bool place(const Rack& rack, int slot_index){
+        return face_rack_slot(rack, slot_index, false, true);
+    }
+
+    // --- SCANNING ---
     std::vector<Rack> find_racks() {
         RCLCPP_INFO(this->get_logger(), "Starting rack scan...");
         std::vector<Rack> found_racks;
 
         usePILZ("PTP");
-        arm_->setMaxAccelerationScalingFactor(0.4);
-        arm_->setMaxVelocityScalingFactor(0.4);
-        // arm_->setJointValueTarget(base_config_);
-        // arm_->move();
+        arm_->setMaxAccelerationScalingFactor(0.5);
+        arm_->setMaxVelocityScalingFactor(0.5);
+        
 
         std::vector<double> current_state = base_config_;
-        double step = 1.04; //1.04      
+        double step = 1.04;     
 
         for (double angle = 0.7; angle < 2.1 - step; angle += step) {
             current_state[0] = angle + base_config_[0];
@@ -195,7 +237,6 @@ public:
             arm_->move();
             RCLCPP_INFO(this->get_logger(), "Arm move completed for scan iteration");
             rclcpp::sleep_for(2s);
-            RCLCPP_INFO(this->get_logger(), "Post-move settling wait complete");
             request_yolo_scan();
             RCLCPP_INFO(this->get_logger(), "Starting rack TF lookup sweep");
 
@@ -288,7 +329,12 @@ public:
 
         usePILZ("PTP");
 
-        for (const auto& rack : rough_racks) {
+        std::vector<Rack> sorted_racks = rough_racks;
+        std::sort(sorted_racks.begin(), sorted_racks.end(), [](const Rack& a, const Rack& b) {
+            return a.position.head<2>().norm() < b.position.head<2>().norm();
+        });
+
+        for (const auto& rack : sorted_racks) {
             double angle = std::atan2(rack.position.y(), rack.position.x());
             std::vector<double> face_state = base_config_;
             face_state[0] = angle;
@@ -341,58 +387,17 @@ public:
     }
 
 
-    void setHeightConstraint(double max_z) {
-        moveit_msgs::msg::Constraints constraints;
-        
-        moveit_msgs::msg::PositionConstraint pcm;
-        pcm.header.frame_id = "world";
-        pcm.link_name = arm_->getEndEffectorLink();
-
-        // Define the shape of the constraint (a Box)
-        shape_msgs::msg::SolidPrimitive box;
-        box.type = shape_msgs::msg::SolidPrimitive::BOX;
-        
-        // Set dimensions: X and Y are very large (effectively unconstrained)
-        // Z is the max_z
-        box.dimensions.resize(3);
-        box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_X] = 10.0; 
-        box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Y] = 2.6;
-        box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z] = max_z;
-
-        // Define the Pose of the Box
-        // The box is centered at its origin, so to make it go from Z=0 to Z=max_z,
-        // we must place the center of the box at Z = max_z / 2
-        geometry_msgs::msg::Pose box_pose;
-        box_pose.position.x = 0.0;
-        box_pose.position.y = 1.3;
-        box_pose.position.z = max_z / 2.0; 
-        box_pose.orientation.w = 1.0;
-
-        // Add the box and its pose to the constraint
-        pcm.constraint_region.primitives.push_back(box);
-        pcm.constraint_region.primitive_poses.push_back(box_pose);
-        pcm.weight = 1.0;
-
-        constraints.position_constraints.push_back(pcm);
-        
-        // If you want to keep existing orientation constraints, 
-        // you would append them to this 'constraints' object here.
-        
-        arm_->setPathConstraints(constraints);
-    }
-
-    void clearConstraints() {
-        arm_->clearPathConstraints();
-    }
-    
-    // --- 4. INSERTION ---
+    // --- RACK PICK AND PLACE LOGIC ---
     bool face_rack_slot(const Rack& rack, int slot_index, bool pick=false, bool place=false) {
+        //face rack
         double angle = std::atan2(rack.position.y(), rack.position.x());
         std::vector<double> approach_state = approach_config_;
         approach_state[0] = angle;
 
         arm_->setJointValueTarget(approach_state);
         arm_->move();
+
+        //face the rack slot
         Eigen::Isometry3d rack_eigen = tf2::transformToEigen(rack.transform);
         Eigen::Vector3d rack_normal  = rack_eigen.rotation().col(0).normalized();
         
@@ -404,8 +409,8 @@ public:
         }
 
         Eigen::Vector3d slot_pos_w(
-            rack_eigen.translation().x() + rack_normal.x()*0.06,
-            rack_eigen.translation().y() + rack_normal.y()*0.06,
+            rack_eigen.translation().x() + rack_normal.x()*0.05,
+            rack_eigen.translation().y() + rack_normal.y()*0.05,
             tray_slot_base_height_ + (slot_index * tray_slot_offset_) + pick_place_offset);
         
         Eigen::Vector3d z_axis = -rack_normal;
@@ -423,7 +428,6 @@ public:
         target.position    = tf2::toMsg(slot_pos_w);
         target.orientation = tf2::toMsg(target_quat);
 
-        // --- Phase 1: PILZ PTP approach, OMPL fallback ---
         bool approach_reached = false;
         geometry_msgs::msg::Pose approach;
         approach.orientation = tf2::toMsg(target_quat);
@@ -436,10 +440,9 @@ public:
                 "Trying PILZ PTP approach at %.2fm: [%.3f, %.3f, %.3f]",
                 dist, approach_pos_w.x(), approach_pos_w.y(), approach_pos_w.z());
 
-            // Try PILZ PTP first — deterministic, shortest joint path
             usePILZ("PTP");
-            arm_->setMaxVelocityScalingFactor(0.4);
-            arm_->setMaxAccelerationScalingFactor(0.4);
+            arm_->setMaxVelocityScalingFactor(0.5);
+            arm_->setMaxAccelerationScalingFactor(0.5);
             arm_->setPoseTarget(approach);
 
             if (arm_->move() == moveit::core::MoveItErrorCode::SUCCESS) {
@@ -447,30 +450,6 @@ public:
                 approach_reached = true;
                 break;
             }
-
-            // RCLCPP_WARN(this->get_logger(), "PILZ PTP failed at %.2fm, trying OMPL fallback", dist);
-
-            // // OMPL fallback — seeded from current state to prevent joint flips
-            // moveit::core::RobotStatePtr current_state = arm_->getCurrentState(5.0);
-            // if (!current_state) {
-            //     RCLCPP_ERROR(this->get_logger(), "Failed to get current state");
-            //     return false;
-            // }
-            // arm_->setStartState(*current_state);
-            // useOMPL();
-            // arm_->setMaxVelocityScalingFactor(0.4);
-            // arm_->setMaxAccelerationScalingFactor(0.3);
-            // arm_->setPoseTarget(approach);
-
-            // if (arm_->move() == moveit::core::MoveItErrorCode::SUCCESS) {
-            //     RCLCPP_INFO(this->get_logger(), "OMPL fallback approach succeeded at %.2fm", dist);
-            //     approach_reached = true;
-            //     clearConstraints();
-            //     break;
-            // }
-
-            // RCLCPP_WARN(this->get_logger(), "OMPL fallback also failed at %.2fm, trying closer", dist);
-            // clearConstraints();
         }
 
         if (!approach_reached) {
@@ -484,8 +463,9 @@ public:
             for (int t = 0; t < 20; ++t) {
                 std::string tray_frame = "tray_" + std::to_string(t);
                 if (!frame_exists(tray_frame)) {
-                    target.position.x -= rack_normal.x() * 0.04;
-                    target.position.y -= rack_normal.y() * 0.04;
+                    RCLCPP_WARN(this->get_logger(), "No tray detected");
+                    target.position.x -= rack_normal.x() * 0.06;
+                    target.position.y -= rack_normal.y() * 0.06;
                     target.position.z -= 0.01;
                     break;
                 }
@@ -529,7 +509,7 @@ public:
                     double depth_dist   = std::abs(delta.dot(normal_2d));
                     double lateral_dist = std::abs(delta.dot(lateral_2d));
 
-                    if (depth_dist < 0.08 && lateral_dist < 0.04){
+                    if (depth_dist < 0.08 && lateral_dist < 0.03){
                         // Update target position and orientation
                         target.position.x = tray_pos.x()- tray_normal.x() * 0.02;
                         target.position.y = tray_pos.y() - tray_normal.y() * 0.02;
@@ -538,8 +518,8 @@ public:
                         //retract_approach.orientation = tf2::toMsg(tray_quat);
                     } else{
                         RCLCPP_INFO(this->get_logger(), "tray TF not close enough to the center of the rack");
-                        target.position.x -= rack_normal.x() * 0.04;
-                        target.position.y -= rack_normal.y() * 0.04;
+                        target.position.x -= rack_normal.x() * 0.06;
+                        target.position.y -= rack_normal.y() * 0.06;
                         target.position.z -= 0.01;
                     }
                     
@@ -555,36 +535,20 @@ public:
             target.position.y -= rack_normal.y() * 0.06;
         }
 
-        // --- Phase 2: Cartesian insertion seeded from current state ---
+        // cartesian insertion from current state ---
         arm_->setMaxVelocityScalingFactor(0.2);
         arm_->setMaxAccelerationScalingFactor(0.15);
-
-        // moveit::core::RobotStatePtr pre_insert_state = arm_->getCurrentState(5.0);
-        // if (!pre_insert_state) {
-        //     RCLCPP_ERROR(this->get_logger(), "Failed to get state before insertion");
-        //     return false;
-        // }
-        //arm_->setStartState(*pre_insert_state);
-        
-        //debug
-        // geometry_msgs::msg::Pose test;
-        // test.orientation = tf2::toMsg(target_quat);
-        
-        // Eigen::Vector3d approach_pos_w = slot_pos_w + (rack_normal * 0.30);
-        // approach.position = tf2::toMsg(approach_pos_w);
 
         std::vector<geometry_msgs::msg::Pose> waypoints = { approach, target }; //target
         moveit_msgs::msg::RobotTrajectory trajectory;
         double fraction = arm_->computeCartesianPath(
             waypoints,
             0.01,   
-            2.0,     // jump_threshold: reject IK solutions where any joint jumps > 2 rad
+            2.0,     
             trajectory,
             false
         );
-        // usePILZ("PTP");
-        // arm_->setPoseTarget(test);
-        // arm_->move();
+
 
         RCLCPP_INFO(this->get_logger(), "Cartesian path: %.1f%%", fraction * 100.0);
 
@@ -606,15 +570,12 @@ public:
         rt.getRobotTrajectoryMsg(trajectory);
         arm_->execute(trajectory);
         RCLCPP_INFO(this->get_logger(), "Cartesian insertion succeeded");
-
-        //rclcpp::sleep_for(2s);
-
         
-
+        // tray-rack interaction
 
         if (pick) {
 
-            //Drop sensitivity to prevent a trip from gripper snapping or initial heavy load
+            //Drop sensitivity to prevent collision detection
             RCLCPP_INFO(this->get_logger(), "Lowering collision sensitivity for picking state.");
             set_collision_level(0);
 
@@ -669,15 +630,8 @@ public:
             set_collision_level(3);
         }
 
-        // --- Phase 3: Cartesian retraction seeded from post-insertion state ---
-        // pre_insert_state = arm_->getCurrentState(5.0);
-        // if (!pre_insert_state) {
-        //     RCLCPP_ERROR(this->get_logger(), "Failed to get state before retraction");
-        //     return false;
-        // }
-        // arm_->setStartState(*pre_insert_state);
-
-        // Target = current pose after pick/place
+        // cartesian retraction from current pose
+        
         geometry_msgs::msg::PoseStamped current_stamped = arm_->getCurrentPose();
         geometry_msgs::msg::Pose retract_target = current_stamped.pose;
 
@@ -722,22 +676,6 @@ public:
         arm_->execute(trajectory);
         RCLCPP_INFO(this->get_logger(), "Cartesian retraction succeeded");
 
-        state = arm_->getCurrentState(1);
-        //rt(arm_->getRobotModel(), arm_->getName());
-        rt.setRobotTrajectoryMsg(*state, trajectory);
-
-        iptp;
-        if (!iptp.computeTimeStamps(rt, 0.2, 0.15)) {
-            RCLCPP_ERROR(this->get_logger(), "Time parameterization failed");
-            return false;
-        }
-                rt.getRobotTrajectoryMsg(trajectory);
-        arm_->execute(trajectory);
-        RCLCPP_INFO(this->get_logger(), "Cartesian retraction succeeded");
-
-        // std::vector<double> retract_state = approach_state;
-        // retract_state[0] = arm_->getCurrentJointValues()[0];
-
         arm_->setJointValueTarget(approach_state);
         arm_->move();
         return true;
@@ -745,28 +683,28 @@ public:
 
     bool place_on_box(const geometry_msgs::msg::Pose& box_pose) {
 
-        // ── Step 1: Rotate joint 0 to face the box ────────────────────────────────
+        //face the box
         double angle = std::atan2(box_pose.position.y, box_pose.position.x);
         std::vector<double> face_state = approach_config_;
         face_state[0] = angle;
 
         usePILZ("PTP");
-        arm_->setMaxVelocityScalingFactor(0.4);
-        arm_->setMaxAccelerationScalingFactor(0.4);
+        arm_->setMaxVelocityScalingFactor(0.5);
+        arm_->setMaxAccelerationScalingFactor(0.5);
         arm_->setJointValueTarget(face_state);
         if (arm_->move() != moveit::core::MoveItErrorCode::SUCCESS) {
             RCLCPP_ERROR(this->get_logger(), "Failed to rotate to face box");
             return false;
         }
 
-        // ── Step 2: Build target orientation — Extract box normal from pose orientation ───────
+        //go 15cm along the normal of the box
         Eigen::Quaterniond box_quat(
             box_pose.orientation.w,
             box_pose.orientation.x,
             box_pose.orientation.y,
             box_pose.orientation.z);
 
-        // Box normal = X axis of the box frame (col(0) of rotation matrix)
+        
         Eigen::Vector3d box_normal = box_quat.toRotationMatrix().col(0).normalized();
 
         Eigen::Vector3d z_axis    = -box_normal;     
@@ -780,14 +718,12 @@ public:
         rot_mat.col(2) = z_axis;
         Eigen::Quaterniond target_quat(rot_mat);
 
-        // ── Step 3: Target pose — 15cm along normal from box surface ──────────────
         geometry_msgs::msg::Pose target;
         target.position.x  = box_pose.position.x + box_normal.x() * 0.15;
         target.position.y  = box_pose.position.y + box_normal.y() * 0.15;
         target.position.z  = box_pose.position.z + 0.02;
         target.orientation = tf2::toMsg(target_quat);
 
-        // ── Step 4: PTP move to target ────────────────────────────────────────────
         RCLCPP_INFO(this->get_logger(),
                 "Trying PILZ PTP approach : [%.3f, %.3f, %.3f]",
                 target.position.x, target.position.y, target.position.z);
@@ -801,6 +737,7 @@ public:
             return false;
         }
 
+        //place the tray on the box
         set_collision_level(0);
         target.position.z = box_pose.position.z;
 
@@ -812,13 +749,8 @@ public:
             return false;
         }
 
-        
-
-        // ── Step 5: Release tray — lower Z, open gripper, small retreat ───────────
-
         set_gripper(false);
 
-        // Update payload BACK to empty gripper weight 
         RCLCPP_INFO(this->get_logger(), "Updating JAKA payload back to EMPTY state.");
         set_robot_payload(1.77, 0.0, 0.0, 65.0);
 
@@ -831,7 +763,7 @@ public:
 
         set_collision_level(1);
 
-        // ── Step 6: Retreat 30cm along normal (+X) ────────────────────────────────
+        //retreat the arm back to apporach config
         current_stamped = arm_->getCurrentPose();
         geometry_msgs::msg::Pose retreat_pose = current_stamped.pose;
         retreat_pose.position.x += box_normal.x() * 0.30;
@@ -842,10 +774,8 @@ public:
         arm_->setPoseTarget(retreat_pose);
         arm_->move();
 
-        // Restore safety levels for fast travel back to homing positions
         set_collision_level(3);
 
-        // ── Step 7: Return to approach config keeping joint 0 facing box ──────────
         std::vector<double> return_state = approach_config_;
         return_state[0] = face_state[0];
 
@@ -860,22 +790,22 @@ public:
     
     bool pick_from_box(const geometry_msgs::msg::Pose& box_pose) {
 
-        // ── Step 1: Go to approach config with joint[0] facing box, joint[1] tilted -10° ──
+        //face the box
         double angle = std::atan2(box_pose.position.y, box_pose.position.x);
         std::vector<double> face_approach_state = approach_config_;
         face_approach_state[0] = angle;
         face_approach_state[1] = approach_config_[1] - (10.0 * M_PI / 180.0);  // −10° tilt
 
         usePILZ("PTP");
-        arm_->setMaxVelocityScalingFactor(0.4);
-        arm_->setMaxAccelerationScalingFactor(0.4);
+        arm_->setMaxVelocityScalingFactor(0.5);
+        arm_->setMaxAccelerationScalingFactor(0.5);
         arm_->setJointValueTarget(face_approach_state);
         if (arm_->move() != moveit::core::MoveItErrorCode::SUCCESS) {
             RCLCPP_ERROR(this->get_logger(), "Failed to move to tilted approach config");
             return false;
         }
 
-        // ── Step 2: YOLO scan and verify tray within 40cm of box ─────────────────
+        //scan and verify the tray position
         request_yolo_scan();
 
         geometry_msgs::msg::TransformStamped best_tray_tf;
@@ -920,7 +850,7 @@ public:
             return false;
         }
         
-        // ── Step 3: Build target pose from tray TF ────────────────────────────────
+        //approach tray from tray normal
         Eigen::Isometry3d tray_eigen = tf2::transformToEigen(best_tray_tf);
         Eigen::Vector3d tray_pos     = tray_eigen.translation();
         Eigen::Vector3d tray_normal  = tray_eigen.rotation().col(0).normalized();
@@ -936,21 +866,18 @@ public:
         rot_mat.col(2) = z_axis;
         Eigen::Quaterniond tray_quat(rot_mat);
 
-        // Target: tray center, 2cm lower
         geometry_msgs::msg::Pose target;
         target.position.x  = tray_pos.x() - tray_normal.x() * 0.015;
         target.position.y  = tray_pos.y() - tray_normal.y() * 0.015;
         target.position.z  = tray_pos.z() - 0.02;
         target.orientation = tf2::toMsg(tray_quat);
 
-        // Approach: 20cm along tray normal, also 2cm lower
         geometry_msgs::msg::Pose approach;
         approach.position.x  = tray_pos.x() + tray_normal.x() * 0.20;
         approach.position.y  = tray_pos.y() + tray_normal.y() * 0.20;
         approach.position.z  = tray_pos.z() - 0.02;
         approach.orientation = tf2::toMsg(tray_quat);
 
-        // ── Step 5: PTP to approach pose (20cm out, 2cm low) ─────────────────────
         usePILZ("PTP");
         arm_->setMaxVelocityScalingFactor(0.3);
         arm_->setMaxAccelerationScalingFactor(0.3);
@@ -960,10 +887,9 @@ public:
             return false;
         }
 
-        // ── Step 6: Open gripper before insertion ─────────────────────────────────
         set_gripper(false);
 
-        // ── Step 7: Cartesian insertion to tray center (2cm low) ─────────────────
+        //cartesian insertion
         arm_->setMaxVelocityScalingFactor(0.2);
         arm_->setMaxAccelerationScalingFactor(0.15);
 
@@ -997,7 +923,7 @@ public:
         arm_->execute(trajectory);
         RCLCPP_INFO(this->get_logger(), "Cartesian insertion complete");
 
-        // ── Step 8: Disable collision, lift 3cm, close gripper ───────────────────
+        //pick tray
         set_collision_level(0);
 
         usePILZ("PTP");
@@ -1012,17 +938,15 @@ public:
 
         set_gripper(true);
 
-        // ── Step 9: Update payload to loaded state ────────────────────────────────
         RCLCPP_INFO(this->get_logger(), "Updating payload to LOADED state.");
         set_robot_payload(4, 0.0, 0.0, 243.0);
 
-        // ── Step 10: Restore collision protection ─────────────────────────────────
         set_collision_level(3);
+        //return tu approach config
         face_approach_state[1] = approach_config_[1];
-        // ── Step 11: Return to approach config, joint[0] still facing box ─────────
 
-        arm_->setMaxVelocityScalingFactor(0.4);
-        arm_->setMaxAccelerationScalingFactor(0.4);
+        arm_->setMaxVelocityScalingFactor(0.5);
+        arm_->setMaxAccelerationScalingFactor(0.5);
         arm_->setJointValueTarget(face_approach_state);
         if (arm_->move() != moveit::core::MoveItErrorCode::SUCCESS) {
             RCLCPP_ERROR(this->get_logger(), "Failed to return to approach config after pick");
@@ -1068,8 +992,7 @@ private:
 
 
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_sub_;
-    //sensor_msgs::msg::JointState last_joint_state_;
-
+    
     std::vector<double> base_config_;
     std::vector<double> approach_config_;
     std::vector<double> gripper_open_;
@@ -1101,29 +1024,19 @@ int main(int argc, char** argv) {
 
 
     if (!refined.empty()) {
-        node->face_rack_slot(refined[0], 8, true);
+        node->pick(refined[0], 8);
         node->place_on_box(node->BOX_POSE);
-        node->face_rack_slot(refined[0], 7, true);
-        node->face_rack_slot(refined[0], 8, false, true);
+        node->pick(refined[0], 7);
+        node->place(refined[0], 8);
         node->pick_from_box(node->BOX_POSE);
-        node->face_rack_slot(refined[0], 9, false, true);
-        // node->face_rack_slot(refined[1], 5);
-        // node->face_rack_slot(refined[0], 4);
-        // node->face_rack_slot(refined[1], 5);
-        // node->face_rack_slot(refined[0], 2);
-        // node->face_rack_slot(refined[1], 5);
-        // node->face_rack_slot(refined[0], 7);
-        // node->face_rack_slot(refined[1], 5);
-        // node->face_rack_slot(refined[0], 0);
-        // node->face_rack_slot(refined[0], 1);
-        // node->face_rack_slot(refined[0], 2);
-        // node->face_rack_slot(refined[0], 3);
-        // node->face_rack_slot(refined[0], 4);
-        // node->face_rack_slot(refined[0], 5);
-        // node->face_rack_slot(refined[0], 6);
-        // node->face_rack_slot(refined[0], 7);
-        // node->face_rack_slot(refined[0], 8);
-        // node->face_rack_slot(refined[0], 9);
+        node->place(refined[0], 7);
+
+        // node->pick_from_box(node->BOX_POSE);
+        // node->place(refined[0], 7);
+        // node->pick_from_box(node->BOX_POSE);
+        // node->place(refined[0], 8);
+        // node->pick_from_box(node->BOX_POSE);
+        // node->place(refined[0], 9);
     }
 
     rclcpp::shutdown();
