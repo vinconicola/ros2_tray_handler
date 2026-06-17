@@ -418,9 +418,9 @@ class YoloInferenceNode(Node):
 
         normal_2d = np.array([-width_vector[1], width_vector[0]])
         
-        if normal_2d[1] > 0:
+        toward_origin = -center_2d / (np.linalg.norm(center_2d) + 1e-6)
+        if np.dot(normal_2d, toward_origin) < 0:
             normal_2d = -normal_2d
-        normal_2d /= np.linalg.norm(normal_2d) + 1e-6
 
         centroid = np.array([center_2d[0], center_2d[1], np.mean(points[:, 2])]) #z positioning of the rack is not relevant
         normal = np.array([normal_2d[0], normal_2d[1], 0.0])
