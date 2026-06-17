@@ -6,6 +6,9 @@
 #include "jaka_msgs/srv/set_io.hpp"
 #include <jaka_msgs/srv/set_payload.hpp>
 #include <jaka_msgs/srv/set_collision.hpp>
+#include "jaka_msgs/msg/robot_msg.hpp"
+#include "std_srvs/srv/trigger.hpp"
+
 
 #include "jaka_planner/JAKAZuRobot.h"
 #include "jaka_planner/jkerr.h"
@@ -29,6 +32,8 @@ const double PI = 3.1415926;
 
 typedef rclcpp_action::Server<control_msgs::action::FollowJointTrajectory> Server;
 rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_states_pub;
+rclcpp::Publisher<jaka_msgs::msg::RobotMsg>::SharedPtr robot_states_pub;
+
 
 // Map error codes to messages
 map<int, string> mapErr = {
@@ -295,6 +300,17 @@ int main(int argc, char *argv[])
             joint_states_callback(joint_states_pub);
         });
 
+    robot_states_pub = node->create_publisher<jaka_msgs::msg::RobotMsg>("/jaka_driver/robot_states", 10);
+    auto robot_states_timer = node->create_wall_timer(
+        chrono::milliseconds(100),  // 10 Hz, matches original driver
+        []() {
+            jaka_msgs::msg::RobotMsg msg;
+            BOOL in_col = false;
+            robot.is_in_collision(&in_col);
+            msg.collision_state = in_col ? 1 : 0;
+            robot_states_pub->publish(msg);
+        });
+
     // Create Action Server for FollowJointTrajectory
     auto moveit_server = rclcpp_action::create_server<control_msgs::action::FollowJointTrajectory>(
         node,
@@ -336,7 +352,7 @@ int main(int argc, char *argv[])
             }
         });
         // Payload Service
-        auto payload_service = node->create_service<jaka_msgs::srv::SetPayload>(
+    auto payload_service = node->create_service<jaka_msgs::srv::SetPayload>(
         "/jaka_driver/set_payload",
         [](const std::shared_ptr<jaka_msgs::srv::SetPayload::Request> request,
            std::shared_ptr<jaka_msgs::srv::SetPayload::Response> response) {
@@ -358,7 +374,7 @@ int main(int argc, char *argv[])
         });
         
         // Collision Sensitivity Service
-        auto collision_service = node->create_service<jaka_msgs::srv::SetCollision>(
+    auto collision_service = node->create_service<jaka_msgs::srv::SetCollision>(
         "/jaka_driver/set_collision_level",
         [](const std::shared_ptr<jaka_msgs::srv::SetCollision::Request> request,
            std::shared_ptr<jaka_msgs::srv::SetCollision::Response> response) {
@@ -377,6 +393,23 @@ int main(int argc, char *argv[])
             
             response->ret = ret;
             response->message = (ret == 0) ? "Collision level updated" : "Error setting collision level";
+        });
+    auto collision_recover_service = node->create_service<std_srvs::srv::Empty>(
+        "/jaka_driver/collision_recover",
+        []([[maybe_unused]] const shared_ptr<std_srvs::srv::Empty::Request> request,
+        [[maybe_unused]] shared_ptr<std_srvs::srv::Empty::Response> response) {
+            int ret = robot.collision_recover();
+            if (ret != 0) {
+                RCLCPP_ERROR(rclcpp::get_logger("moveit_server"),
+                    "collision_recover failed: %s", mapErr[ret].c_str());
+            }
+        });
+
+    auto clear_error_service = node->create_service<std_srvs::srv::Empty>(
+        "/jaka_driver/clear_error",
+        []([[maybe_unused]] const shared_ptr<std_srvs::srv::Empty::Request> request,
+        [[maybe_unused]] shared_ptr<std_srvs::srv::Empty::Response> response) {
+            robot.clear_error();
         });
 
 

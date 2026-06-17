@@ -18,6 +18,7 @@
   <build_depend>std_msgs</build_depend>
   <build_depend>jaka_msgs</build_depend>
   <build_depend>moveit_ros_planning_interface</build_depend>
+  <build_depend>std_srvs</build_depend>
 
   <build_export_depend>rclcpp</build_export_depend>
   <build_export_depend>rclpy</build_export_depend>

@@ -23,6 +23,7 @@ find_package(control_msgs REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(moveit_visual_tools REQUIRED)
 find_package(moveit_core REQUIRED)
+find_package(std_srvs REQUIRED)
 
 
 # Optionally find additional dependencies
@@ -43,6 +44,7 @@ ament_target_dependencies(moveit_server
   action_msgs
   control_msgs
   moveit_ros_planning_interface
+  std_srvs
 )
 ament_target_dependencies(moveit_test
   rclcpp
