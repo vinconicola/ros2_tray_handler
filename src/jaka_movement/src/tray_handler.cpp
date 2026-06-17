@@ -595,8 +595,7 @@ public:
             RCLCPP_INFO(this->get_logger(), "Updating JAKA payload to LOADED state.");
             set_robot_payload(4, 0.0, 0.0, 243.0);
 
-            current_pose = arm_->getCurrentPose();
-            geometry_msgs::msg::Pose lift_pose2 = current_pose.pose;
+            geometry_msgs::msg::Pose lift_pose2 = lift_pose;
             lift_pose2.position.z += 0.02;
             arm_->setPoseTarget(lift_pose2);
             arm_->move();
@@ -621,8 +620,7 @@ public:
 
             set_gripper(false);
 
-            current_pose = arm_->getCurrentPose();
-            geometry_msgs::msg::Pose retreat_pose = current_pose.pose;
+            geometry_msgs::msg::Pose retreat_pose = drop_pose;
             retreat_pose.position.z -= 0.025;
             arm_->setPoseTarget(retreat_pose);
             arm_->move();
@@ -764,8 +762,7 @@ public:
         set_collision_level(1);
 
         //retreat the arm back to apporach config
-        current_stamped = arm_->getCurrentPose();
-        geometry_msgs::msg::Pose retreat_pose = current_stamped.pose;
+        geometry_msgs::msg::Pose retreat_pose = drop_pose;
         retreat_pose.position.x += box_normal.x() * 0.30;
         retreat_pose.position.y += box_normal.y() * 0.30;
 
