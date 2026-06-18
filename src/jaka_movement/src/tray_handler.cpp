@@ -300,7 +300,7 @@ public:
             RCLCPP_INFO(this->get_logger(), "Waiting for YOLO service...");
         }
         trigger_client_->async_send_request(request);
-        rclcpp::sleep_for(2s);
+        rclcpp::sleep_for(1s);
         RCLCPP_INFO(this->get_logger(), "YOLO scan wait complete");
     }
 
@@ -319,7 +319,7 @@ public:
 
         geometry_msgs::msg::Pose box_pose;
         box_pose.position.x = 0.0;
-        box_pose.position.y = 1.3;
+        box_pose.position.y = 0.0;
         box_pose.position.z = max_z / 2.0;
         box_pose.orientation.w = 1.0;
 
@@ -406,11 +406,11 @@ public:
         std::vector<double> current_state = base_config_;
         double step = 0.7;
 
-        for (double angle = 0.9; angle <  1.; angle += step) {
+        for (double angle = 0.9; angle < 1. ; angle += step) {
             current_state[0] = angle + base_config_[0];
             arm_->setJointValueTarget(current_state);
             arm_->move();
-            rclcpp::sleep_for(2s);
+            rclcpp::sleep_for(200ms);
             request_yolo_scan();
 
             for (int i = 0; i < 10; ++i) {
@@ -482,7 +482,7 @@ public:
 
             arm_->setJointValueTarget(face_state);
             arm_->move();
-            rclcpp::sleep_for(3s);
+            rclcpp::sleep_for(200ms);
             request_yolo_scan();
 
             try {
@@ -536,8 +536,8 @@ public:
         else if (place) pick_place_offset =  0.03;
 
         Eigen::Vector3d slot_pos_w(
-            rack_eigen.translation().x() + rack_normal.x() * 0.06,
-            rack_eigen.translation().y() + rack_normal.y() * 0.06,
+            rack_eigen.translation().x() + rack_normal.x() * 0.055,
+            rack_eigen.translation().y() + rack_normal.y() * 0.055,
             tray_slot_base_height_ + (slot_index * tray_slot_offset_) + pick_place_offset);
 
         Eigen::Vector3d z_axis   = -rack_normal;
@@ -640,7 +640,7 @@ public:
 
         // Cartesian insertion
         if (place){
-            set_collision_level(4);
+            set_collision_level(5);
             arm_->setMaxVelocityScalingFactor(0.2);
             arm_->setMaxAccelerationScalingFactor(0.015);
         } else {
@@ -654,7 +654,7 @@ public:
         double fraction = arm_->computeCartesianPath(waypoints, 0.01, 2.0, trajectory, false);
 
         RCLCPP_INFO(this->get_logger(), "Cartesian path: %.1f%%", fraction * 100.0);
-        if (fraction < 0.98) {
+        if (fraction < 0.96) {
             RCLCPP_ERROR(this->get_logger(), "Cartesian path only %.1f%% complete", fraction * 100.0);
             return false;
         }
@@ -759,10 +759,10 @@ public:
             fraction = arm_->computeCartesianPath(ret_waypoints, 0.01, 2.0, trajectory, false);
 
             RCLCPP_INFO(this->get_logger(), "Retraction at %.2fm: %.1f%%", dist, fraction * 100.0);
-            if (fraction >= 0.98) break;
+            if (fraction >= 0.96) break;
         }
 
-        if (fraction < 0.98) {
+        if (fraction < 0.96) {
             RCLCPP_ERROR(this->get_logger(), "Cartesian retraction only %.1f%% complete", fraction * 100.0);
             return false;
         }
@@ -918,8 +918,8 @@ public:
         Eigen::Quaterniond tray_quat(rot_mat);
 
         geometry_msgs::msg::Pose target;
-        target.position.x  = tray_pos.x() - tray_normal.x() * 0.015;
-        target.position.y  = tray_pos.y() - tray_normal.y() * 0.015;
+        target.position.x  = tray_pos.x() - tray_normal.x() * 0.02;
+        target.position.y  = tray_pos.y() - tray_normal.y() * 0.02;
         target.position.z  = tray_pos.z() - 0.02;
         target.orientation = tf2::toMsg(tray_quat);
 
@@ -1105,27 +1105,27 @@ int main(int argc, char** argv) {
         // Each operation is wrapped in execute_step so collisions are caught
         // and recovery runs automatically before the step is retried.
 
-        // node->execute_step(
-        //     "pick rack[0] slot 7",
-        //     RobotOperation::PICKING, 0, 7,
-        //     [&]{ return node->pick(node->current_racks_[0], 7); });
+        node->execute_step(
+            "pick rack[0] slot 7",
+            RobotOperation::PICKING, 0, 7,
+            [&]{ return node->pick(node->current_racks_[0], 7); });
 
-        // node->execute_step(
-        //     "place on box",
-        //     RobotOperation::TRANSIT, -1, -1,
-        //     [&]{ return node->place_on_box(node->BOX_POSE); });
+        node->execute_step(
+            "place on box",
+            RobotOperation::TRANSIT, -1, -1,
+            [&]{ return node->place_on_box(node->BOX_POSE); });
 
-        // node->execute_step(
-        //     "pick from box",
-        //     RobotOperation::TRANSIT, -1, -1,
-        //     [&]{ return node->pick_from_box(node->BOX_POSE); });
+        node->execute_step(
+            "pick from box",
+            RobotOperation::TRANSIT, -1, -1,
+            [&]{ return node->pick_from_box(node->BOX_POSE); });
 
-        // node->execute_step(
-        //     "place rack[0] slot 9",
-        //     RobotOperation::PLACING, 0, 9,
-        //     [&]{ return node->place(node->current_racks_[0], 9); });
+        node->execute_step(
+            "place rack[0] slot 8",
+            RobotOperation::PLACING, 0, 8,
+            [&]{ return node->place(node->current_racks_[0], 8); });
         
-        //  load carrello
+        // // load carrello
         // node->execute_step(
         //     "pick from box",
         //     RobotOperation::TRANSIT, -1, -1,
@@ -1157,36 +1157,36 @@ int main(int argc, char** argv) {
         //     [&]{ return node->place(node->current_racks_[0], 9); });
 
 
-        // swap vassoi
-        node->execute_step(
-            "pick rack[0] slot 7",
-            RobotOperation::PICKING, 0, 7,
-            [&]{ return node->pick(node->current_racks_[0], 7); });
+        // // swap vassoi
+        // node->execute_step(
+        //     "pick rack[0] slot 7",
+        //     RobotOperation::PICKING, 0, 7,
+        //     [&]{ return node->pick(node->current_racks_[0], 7); });
 
-        node->execute_step(
-            "place on box",
-            RobotOperation::TRANSIT, -1, -1,
-            [&]{ return node->place_on_box(node->BOX_POSE); });
+        // node->execute_step(
+        //     "place on box",
+        //     RobotOperation::TRANSIT, -1, -1,
+        //     [&]{ return node->place_on_box(node->BOX_POSE); });
 
-        node->execute_step(
-            "pick rack[0] slot 8",
-            RobotOperation::PICKING, 0, 8,
-            [&]{ return node->pick(node->current_racks_[0], 8); });
+        // node->execute_step(
+        //     "pick rack[0] slot 8",
+        //     RobotOperation::PICKING, 0, 8,
+        //     [&]{ return node->pick(node->current_racks_[0], 8); });
 
-        node->execute_step(
-            "place rack[0] slot 7",
-            RobotOperation::PLACING, 0, 7,
-            [&]{ return node->place(node->current_racks_[0], 7); });
+        // node->execute_step(
+        //     "place rack[0] slot 7",
+        //     RobotOperation::PLACING, 0, 7,
+        //     [&]{ return node->place(node->current_racks_[0], 7); });
 
-        node->execute_step(
-            "pick from box",
-            RobotOperation::TRANSIT, -1, -1,
-            [&]{ return node->pick_from_box(node->BOX_POSE); });
+        // node->execute_step(
+        //     "pick from box",
+        //     RobotOperation::TRANSIT, -1, -1,
+        //     [&]{ return node->pick_from_box(node->BOX_POSE); });
 
-        node->execute_step(
-            "place rack[0] slot 8",
-            RobotOperation::PLACING, 0, 8,
-            [&]{ return node->place(node->current_racks_[0], 8); });
+        // node->execute_step(
+        //     "place rack[0] slot 8",
+        //     RobotOperation::PLACING, 0, 8,
+        //     [&]{ return node->place(node->current_racks_[0], 8); });
         
     }
 
